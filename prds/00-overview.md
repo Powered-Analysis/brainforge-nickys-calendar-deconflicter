@@ -120,6 +120,7 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 
 Ensures the machine scales to zero when idle ($0 CPU/$0 RAM) while the Fly Proxy wakes it via memory snapshot in 200–400 ms upon incoming webhook requests or OAuth callbacks.
 * **External Watch Renewal Ping (P0):** An external runner pings `POST /internal/renew-watches` every 3 days to wake the suspended machine, renew all active Google Calendar watch channels in Turso, and allow it to suspend again.
+* **Renewal Ping Authentication (P0):** `POST /internal/renew-watches` accepts only a request that carries `Authorization: Bearer <token>` with a token equal to `INTERNAL_CRON_SECRET`. The two are compared in constant time, so the time a rejection takes reveals nothing about the secret. A request whose token is missing, malformed, or wrong gets `401` with `WWW-Authenticate: Bearer` and renews nothing. When `INTERNAL_CRON_SECRET` is unset or empty, every request gets `500` and renews nothing, so a deployment that lacks the secret is never open.
 * **Turso (libSQL) Data Layer (P0):** Store multi-calendar state, sync cursors, watch channels, Sentience OAuth tokens, and deduplication logs in Turso.
 
 ---
@@ -267,6 +268,7 @@ CREATE TABLE processed_events (
 
 * **External Cron Runner (GitHub Actions / Cloudflare Worker):**
 * *Role:* Scheduled wake ping triggering `POST /internal/renew-watches` every 3 days.
+* *Auth:* The bearer secret defined under Renewal Ping Authentication, which the runner holds alongside the Fly app.
 
 
 
