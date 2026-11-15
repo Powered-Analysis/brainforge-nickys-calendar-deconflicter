@@ -5,6 +5,8 @@ import functools
 import logging
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from dispatcher import conflicts, db, sentience_auth, settings
@@ -41,27 +43,78 @@ def _deliver_conflicts(
     active_calendars = [channel.calendar_id for channel in db.get_active_channels()]
     for event in events:
         incoming = conflicts.meeting_from_event(calendar_id, event, domain, time_zone)
-        # A meeting that has ended can't have an overlap still ahead.
-        if incoming is None or incoming.end <= now:
+        # A meeting that has ended can't have an overlap still ahead. A series' own interval
+        # is its first occurrence's, so it says nothing about the occurrences still to come.
+        if incoming is None or (not incoming.recurrence and incoming.end <= now):
             continue
-        others = [
-            meeting
-            for other_calendar in active_calendars
-            for other in google.events_between(
-                other_calendar, incoming.start, incoming.end
-            )
-            if (
-                meeting := conflicts.meeting_from_event(
-                    other_calendar, other, domain, time_zone
-                )
-            )
-        ]
-        for conflict in conflicts.find_conflicts(incoming, others, now):
+        found = _conflicts_with_the_calendars(
+            google, incoming, active_calendars, now, domain, time_zone
+        )
+        for conflict in found:
             event_hash = conflicts.event_hash(conflict)
             if db.is_conflict_processed(event_hash):
                 continue
             sentience_auth.deliver(conflicts.message(conflict, time_zone()))
             db.record_processed_conflict(event_hash, calendar_id, int(time.time()))
+
+
+def _conflicts_with_the_calendars(
+    google: GoogleCalendar,
+    incoming: conflicts.Meeting,
+    calendar_ids: list[str],
+    now: datetime,
+    domain: str,
+    time_zone: Callable[[], str],
+) -> list[conflicts.Conflict]:
+    """The conflicts the incoming meeting raises against the events of the calendars.
+
+    A series is checked against every event that hasn't ended, however far ahead; a single
+    event, against what overlaps it (Recurring Series as One Commitment, Look-ahead).
+    """
+    start, end = (now, None) if incoming.recurrence else (incoming.start, incoming.end)
+    listed = {
+        calendar_id: google.events_between(calendar_id, start, end)
+        for calendar_id in calendar_ids
+    }
+    # An occurrence edited on its own is listed as an event of its own, and then it is not an
+    # occurrence of its series any more.
+    edited_on_their_own = {
+        calendar_id: {e["id"] for e in events if "recurringEventId" in e}
+        for calendar_id, events in listed.items()
+    }
+
+    # The series' occurrences are the same for every event it is compared with in one window.
+    @functools.cache
+    def occurrences(calendar_id: str, series_id: str, window: conflicts.Interval):
+        return conflicts.occurrences(
+            google.series_occurrences(calendar_id, series_id, *window),
+            edited_on_their_own.get(calendar_id, set()),
+            time_zone,
+        )
+
+    found = []
+    for calendar_id, events in listed.items():
+        for event in events:
+            other = conflicts.meeting_from_event(calendar_id, event, domain, time_zone)
+            if other is None or conflicts.is_itself(incoming, other):
+                continue
+            mine = incoming
+            if incoming.recurrence or other.recurrence:
+                window = conflicts.look_ahead(incoming, other, now)
+                if incoming.recurrence:
+                    mine = replace(
+                        incoming,
+                        occurrences=occurrences(
+                            incoming.calendar_id, incoming.event_id, window
+                        ),
+                    )
+                if other.recurrence:
+                    other = replace(
+                        other,
+                        occurrences=occurrences(calendar_id, other.event_id, window),
+                    )
+            found += conflicts.find_conflicts(mine, [other], now)
+    return found
 
 
 def _primary_time_zone(google: GoogleCalendar) -> str:

@@ -8,8 +8,13 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+Interval = tuple[datetime, datetime]
+
+# Recurring Series as One Commitment, Look-ahead: how far two series are compared.
+SERIES_LOOK_AHEAD = timedelta(days=90)
 
 INTERNAL = "internal"
 EXTERNAL_MIXED = "external_mixed"
@@ -55,6 +60,12 @@ class Meeting:
     organizer: str | None
     attendees: tuple[str, ...]
     recurrence: tuple[str, ...]
+    # The series this event is an occurrence of, when it was moved or edited on its own.
+    series_id: str | None = None
+    # A series only: the occurrences read for the check (a conflict holds just the colliding
+    # one). `start` and `end` stay the series event's own. None means none were read, and the
+    # series event's own interval stands in.
+    occurrences: tuple[Interval, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -114,15 +125,44 @@ def _midnight(day: str, zone: ZoneInfo) -> datetime:
 def is_evaluable(event: dict) -> bool:
     """Whether the event can conflict at all.
 
-    A cancelled event, a transparent one (All-Day "Busy" Event Evaluation: only `transparent`
-    is excluded), and a recurring series are not evaluated here.
+    A cancelled event and a transparent one (All-Day "Busy" Event Evaluation: only
+    `transparent` is excluded) are not evaluated.
     """
     return not (
         event.get("status") == "cancelled"
         or event.get("transparency") == "transparent"
-        or event.get("recurrence")
         or not any(key in event.get("start", {}) for key in ("dateTime", "date"))
         or not any(key in event.get("end", {}) for key in ("dateTime", "date"))
+    )
+
+
+def _interval(event: dict, primary_time_zone: Callable[[], str]) -> Interval:
+    """`primary_time_zone` is called only for an all-day event, which is the interval between
+    two midnights of that zone (All-Day Event Arithmetic: `end.date` is exclusive)."""
+    if "date" in event["start"]:
+        zone = ZoneInfo(primary_time_zone())
+        return (
+            _midnight(event["start"]["date"], zone),
+            _midnight(event["end"]["date"], zone),
+        )
+    return _moment(event["start"]), _moment(event["end"])
+
+
+def occurrences(
+    instances: list[dict],
+    exception_ids: set[str],
+    primary_time_zone: Callable[[], str],
+) -> tuple[Interval, ...]:
+    """The occurrences of a series that count as the series' own.
+
+    `instances` is what `events.instances` returned. An occurrence moved or edited on its own
+    is an event in its own right (`exception_ids`), and a cancelled one is gone (Recurring
+    Series as One Commitment, Reading).
+    """
+    return tuple(
+        _interval(instance, primary_time_zone)
+        for instance in instances
+        if instance.get("status") != "cancelled" and instance["id"] not in exception_ids
     )
 
 
@@ -134,19 +174,11 @@ def meeting_from_event(
 ) -> Meeting | None:
     """The event as a meeting that can conflict, or None when it can't.
 
-    `primary_time_zone` is called only for an all-day event, which is the interval between
-    two midnights of that zone (All-Day Event Arithmetic: `end.date` is exclusive).
+    A series is one meeting, with the interval of its first occurrence.
     """
     if not is_evaluable(event):
         return None
-    all_day = "date" in event["start"]
-    if all_day:
-        zone = ZoneInfo(primary_time_zone())
-        start = _midnight(event["start"]["date"], zone)
-        end = _midnight(event["end"]["date"], zone)
-    else:
-        start = _moment(event["start"])
-        end = _moment(event["end"])
+    start, end = _interval(event, primary_time_zone)
     return Meeting(
         calendar_id=calendar_id,
         event_id=event["id"],
@@ -154,11 +186,12 @@ def meeting_from_event(
         summary=event.get("summary", ""),
         start=start,
         end=end,
-        all_day=all_day,
+        all_day="date" in event["start"],
         classification=classify(event, workspace_domain),
         organizer=event.get("organizer", {}).get("email"),
         attendees=tuple(a["email"] for a in event.get("attendees", [])),
         recurrence=tuple(event.get("recurrence", [])),
+        series_id=event.get("recurringEventId"),
     )
 
 
@@ -168,26 +201,72 @@ def find_conflicts(
     """The conflicts between the incoming meeting and each of the others.
 
     Times are half-open, `[start, end)`, so meetings that only touch don't overlap. A conflict
-    whose overlap has already ended is not raised, and a meeting never conflicts with itself
-    or with another copy of its invitation. Meetings on two calendars are both Internal,
-    whoever is invited (Cross-Calendar Collision Detection).
+    whose overlap has already ended is not raised, and a meeting never conflicts with itself,
+    with its own series or occurrences, or with another copy of its invitation. Meetings on two
+    calendars are both Internal, whoever is invited (Cross-Calendar Collision Detection).
+
+    A series overlaps when any of its occurrences does. The pair is one conflict, which holds
+    the earliest colliding occurrence of each series (Recurring Series as One Commitment).
     """
     conflicts = []
     for other in others:
-        same_calendar = other.calendar_id == incoming.calendar_id
-        if (same_calendar and other.event_id == incoming.event_id) or (
-            incoming.ical_uid and other.ical_uid == incoming.ical_uid
-        ):
+        if is_itself(incoming, other):
             continue
-        overlap_start = max(incoming.start, other.start)
-        overlap_end = min(incoming.end, other.end)
-        if overlap_start < overlap_end and overlap_end > now:
-            first, second = incoming, other
-            if not same_calendar:
-                first = replace(incoming, classification=INTERNAL)
-                second = replace(other, classification=INTERNAL)
-            conflicts.append(Conflict(first, second, overlap_start, overlap_end))
+        same_calendar = other.calendar_id == incoming.calendar_id
+        collisions = [
+            (max(mine[0], theirs[0]), min(mine[1], theirs[1]), mine, theirs)
+            for mine in _intervals(incoming)
+            for theirs in _intervals(other)
+            if max(mine[0], theirs[0]) < min(mine[1], theirs[1])
+            and min(mine[1], theirs[1]) > now
+        ]
+        if not collisions:
+            continue
+        overlap_start, overlap_end, mine, theirs = min(
+            collisions, key=lambda collision: collision[0]
+        )
+        first, second = _at(incoming, mine), _at(other, theirs)
+        if not same_calendar:
+            first = replace(first, classification=INTERNAL)
+            second = replace(second, classification=INTERNAL)
+        conflicts.append(Conflict(first, second, overlap_start, overlap_end))
     return conflicts
+
+
+def is_itself(incoming: Meeting, other: Meeting) -> bool:
+    """Whether the two are one commitment: the same event, a series and one of its
+    occurrences, or copies of one invitation."""
+    same_calendar = other.calendar_id == incoming.calendar_id
+    return bool(
+        (
+            same_calendar
+            and (
+                other.event_id == incoming.event_id
+                or other.series_id == incoming.event_id
+                or incoming.series_id == other.event_id
+            )
+        )
+        or (incoming.ical_uid and other.ical_uid == incoming.ical_uid)
+    )
+
+
+def look_ahead(incoming: Meeting, other: Meeting, now: datetime) -> Interval:
+    """Recurring Series as One Commitment, Look-ahead: the span whose occurrences are
+    examined when at least one of the two is a series."""
+    if incoming.recurrence and other.recurrence:
+        return now, now + SERIES_LOOK_AHEAD
+    single = other if incoming.recurrence else incoming
+    return single.start, single.end
+
+
+def _intervals(meeting: Meeting) -> tuple[Interval, ...]:
+    if meeting.occurrences is None:
+        return ((meeting.start, meeting.end),)
+    return meeting.occurrences
+
+
+def _at(meeting: Meeting, interval: Interval) -> Meeting:
+    return replace(meeting, occurrences=(interval,)) if meeting.recurrence else meeting
 
 
 def _utc(moment: datetime) -> str:
@@ -220,16 +299,18 @@ def _rfc3339(moment: datetime, zone: ZoneInfo) -> str:
 
 
 def _meeting_payload(meeting: Meeting, zone: ZoneInfo) -> dict:
+    # The colliding occurrence of a series, not its first one (Conflict Message Contract).
+    start, end = _intervals(meeting)[0]
     # No description, location, conference link, or attachment: an invitation's text is written
     # by whoever sent it (Conflict Message Contract).
     return {
         "calendar_id": meeting.calendar_id,
         "event_id": meeting.event_id,
         "summary": meeting.summary,
-        "start": _rfc3339(meeting.start, zone),
-        "end": _rfc3339(meeting.end, zone),
+        "start": _rfc3339(start, zone),
+        "end": _rfc3339(end, zone),
         "all_day": meeting.all_day,
-        "recurring": False,
+        "recurring": bool(meeting.recurrence),
         "classification": meeting.classification,
         "organizer": meeting.organizer,
         "attendees": list(meeting.attendees),

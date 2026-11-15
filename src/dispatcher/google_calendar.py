@@ -49,6 +49,13 @@ def _execute_errors() -> Iterator[None]:
         ) from exc
 
 
+def _window(start: datetime, end: datetime | None) -> dict[str, str]:
+    window = {"timeMin": start.astimezone(UTC).isoformat()}
+    if end:
+        window["timeMax"] = end.astimezone(UTC).isoformat()
+    return window
+
+
 class GoogleCalendar:
     """The operator's Calendar API session. Reads its credentials from the settings."""
 
@@ -91,23 +98,32 @@ class GoogleCalendar:
             if not page_token:
                 return entries
 
-    def _list_events(self, calendar_id: str, **params: Any) -> tuple[list[dict], dict]:
-        """Every page of `events.list` for the parameters, and the last page."""
+    def _list_events(
+        self, calendar_id: str, *, instances_of: str | None = None, **params: Any
+    ) -> tuple[list[dict], dict]:
+        """Every page of `events.list` (or, for a series id in `instances_of`, of
+        `events.instances`) for the parameters, and the last page."""
         events: list[dict] = []
         page_token = None
         while True:
             with _execute_errors():
                 try:
-                    page = (
-                        self._api.events()
-                        .list(
+                    if instances_of:
+                        request = self._api.events().instances(
+                            calendarId=calendar_id,
+                            eventId=instances_of,
+                            maxResults=PAGE_SIZE,
+                            pageToken=page_token,
+                            **params,
+                        )
+                    else:
+                        request = self._api.events().list(
                             calendarId=calendar_id,
                             maxResults=PAGE_SIZE,
                             pageToken=page_token,
                             **params,
                         )
-                        .execute()
-                    )
+                    page = request.execute()
                 except HttpError as exc:
                     if params.get("syncToken") and exc.resp.status == 410:
                         raise SyncTokenExpired(
@@ -137,16 +153,25 @@ class GoogleCalendar:
         return events, next_sync_token
 
     def events_between(
-        self, calendar_id: str, start: datetime, end: datetime
+        self, calendar_id: str, start: datetime, end: datetime | None = None
     ) -> list[dict]:
-        """The events that overlap `[start, end)`; a series comes back as one event.
+        """The events that overlap `[start, end)`, or that end after `start` when there is no
+        `end`; a series comes back as one event, and so does an occurrence edited on its own.
 
         Google leaves out an event that ends at or before `start` or starts at or after `end`.
         """
+        events, _ = self._list_events(calendar_id, **_window(start, end))
+        return events
+
+    def series_occurrences(
+        self, calendar_id: str, series_id: str, start: datetime, end: datetime
+    ) -> list[dict]:
+        """The occurrences of a series that overlap `[start, end)`, from `events.instances`.
+
+        Occurrences edited on their own are among them, and cancelled ones are not.
+        """
         events, _ = self._list_events(
-            calendar_id,
-            timeMin=start.astimezone(UTC).isoformat(),
-            timeMax=end.astimezone(UTC).isoformat(),
+            calendar_id, instances_of=series_id, **_window(start, end)
         )
         return events
 
