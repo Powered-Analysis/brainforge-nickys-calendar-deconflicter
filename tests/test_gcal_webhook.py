@@ -2,7 +2,7 @@
 
 Google is replaced by the `httplib2`-compatible transport the attach tests use, extended with
 scripted `events.list` answers keyed by the `syncToken` the request carries. Sentience is
-replaced by an `httpx` transport that must never be called. The database is the libSQL
+replaced by an `httpx2` transport that must never be called. The database is the libSQL
 container.
 """
 

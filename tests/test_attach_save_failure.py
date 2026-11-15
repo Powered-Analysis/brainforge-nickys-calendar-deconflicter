@@ -2,7 +2,7 @@
 channel is closed through the Google Calendar module, so Google keeps no channel that no row records.
 
 Google is replaced by the `httplib2`-compatible transport the attach tests use, extended with
-`channels.stop`. Sentience is replaced by an `httpx` transport that must never be called. The
+`channels.stop`. Sentience is replaced by an `httpx2` transport that must never be called. The
 database is the libSQL container; the failing save stands in for an unreachable database.
 """
 

@@ -1,4 +1,4 @@
-"""The shared HTTP client is `httpx2`; `httpx` is gone from the project (convention 9)."""
+"""The shared HTTP client is `httpx2`; its predecessor is gone from the project (convention 9)."""
 
 import ast
 import re

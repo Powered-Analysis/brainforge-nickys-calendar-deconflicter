@@ -1,6 +1,6 @@
 """Issue #8: refreshing Sentience access, the Re-Authorization Alert, and recovery.
 
-Sentience's auth server and Resend are replaced by one injected `httpx` transport that routes by
+Sentience's auth server and Resend are replaced by one injected `httpx2` transport that routes by
 host. The Sentience MCP session is replaced at the one function that opens it and dispatches a
 payload, Google by the fake the dispatch tests use. The database is the libSQL container.
 """

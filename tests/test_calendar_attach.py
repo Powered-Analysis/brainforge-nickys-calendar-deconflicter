@@ -1,7 +1,7 @@
 """Issue #2: `calendar attach <calendar_id> | all | --auto-discover`.
 
 Google is replaced by an `httplib2`-compatible transport injected into the one Google Calendar
-module, and Sentience by an `httpx` transport that must never be called. The database is the
+module, and Sentience by an `httpx2` transport that must never be called. The database is the
 libSQL container.
 """
 

@@ -1,6 +1,6 @@
 """Issue #4: `auth sentience` and `GET /oauth/sentience/callback`.
 
-Sentience's auth server is replaced by an injected `httpx` transport, and the operator's
+Sentience's auth server is replaced by an injected `httpx2` transport, and the operator's
 browser by the one URL-opening function. The database is the libSQL container.
 """
 
@@ -560,7 +560,7 @@ def test_the_access_log_does_not_carry_the_authorization_code(caplog):
     assert CODE not in caplog.text
 
 
-# --- 10. One shared httpx client, replaceable through its transport -------------------------
+# --- 10. One shared httpx2 client, replaceable through its transport -------------------------
 
 
 def test_every_request_to_the_auth_server_goes_through_the_injected_transport(
