@@ -168,3 +168,74 @@ def _fail_every_stop(google, status):
             return status
 
     return Everything()
+
+
+# Issue #40: when the save fails and the stop also fails, the operator must learn both
+# failures from the reported detail.
+
+
+def _failed_detail(google, status=500):
+    google.stop_failures = _fail_every_stop(google, status)
+    with pytest.raises(GoogleRequestFailed) as caught:
+        attach_entry(google)
+    return str(caught.value)
+
+
+def test_a_failed_stop_after_a_failed_save_names_the_channel_that_was_left_open(
+    google, failing_save
+):
+    detail = _failed_detail(google)
+    (watch,) = google.watch_bodies()
+    assert watch["id"] in detail
+
+
+def test_a_failed_stop_after_a_failed_save_says_that_saving_failed(
+    google, failing_save
+):
+    detail = _failed_detail(google)
+    assert "fictional database outage" in detail
+    assert "sav" in detail.lower()
+
+
+def test_a_failed_stop_after_a_failed_save_still_says_why_the_stop_failed(
+    google, failing_save
+):
+    assert "500" in _failed_detail(google, 500)
+
+
+def test_attach_all_reports_both_failures_as_the_calendars_failed_detail(
+    google, monkeypatch
+):
+    real_save = db.save_attached_calendar
+
+    def save(calendar_id, *args):
+        if calendar_id == WORK:
+            raise DatabaseDown("fictional database outage")
+        return real_save(calendar_id, *args)
+
+    monkeypatch.setattr(db, "save_attached_calendar", save)
+    google.stop_failures = _fail_every_stop(google, 500)
+    outcomes = {
+        o.calendar_id: o for o in attach.attach_all(GoogleCalendar(), WEBHOOK, NOW)
+    }
+    failed = outcomes[WORK]
+    watch_ids = {w["id"] for w in google.watch_bodies()}
+    assert failed.result == "failed"
+    assert "fictional database outage" in failed.detail
+    assert any(channel in failed.detail for channel in watch_ids)
+    assert outcomes[HOME].result == "attached"
+
+
+def test_attach_all_reports_only_the_save_failure_when_the_stop_succeeds(
+    google, monkeypatch
+):
+    def save(*args, **kwargs):
+        raise db.Error("fictional database outage")
+
+    monkeypatch.setattr(db, "save_attached_calendar", save)
+    outcomes = attach.attach_all(GoogleCalendar(), WEBHOOK, NOW)
+    assert all(o.result == "failed" for o in outcomes)
+    assert all("fictional database outage" in o.detail for o in outcomes)
+    watch_ids = {w["id"] for w in google.watch_bodies()}
+    assert not any(channel in o.detail for o in outcomes for channel in watch_ids)
+    assert len(google.stop_bodies()) == len(outcomes)
