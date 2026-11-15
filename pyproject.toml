@@ -10,6 +10,7 @@ dependencies = [
     "google-auth>=2.62.2",
     "google-auth-httplib2>=0.4.4",
     "httpx>=0.28.1",
+    "mcp>=2.3.0",
     "turso-serverless",
     "uvicorn",
 ]

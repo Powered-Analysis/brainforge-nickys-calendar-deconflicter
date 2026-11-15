@@ -113,12 +113,20 @@ The command closes the calendar's Google channel and marks the calendar inactive
 
 ## Change notifications
 
-`POST /webhooks/gcal` is the address every attached calendar's Google channel notifies. The `X-Goog-Channel-ID` header says which calendar changed, and the app reads that calendar's changes with `events.list` from the stored `sync_token`, every page, then stores the new `sync_token`. It never writes to Google.
+`POST /webhooks/gcal` is the address every attached calendar's Google channel notifies. The `X-Goog-Channel-ID` header says which calendar changed, and the app reads that calendar's changes with `events.list` from the stored `sync_token`, every page, delivers the conflicts they raise, then stores the new `sync_token`. It never writes to Google.
 
-- `200`: the changes were read.
+- `200`: the changes were read and every conflict in them is delivered or was delivered before.
 - `400`: the request has no `X-Goog-Channel-ID`.
 - `404`: no active calendar has that channel, so nothing is read. A detached calendar's old channel is one of these.
-- `503`, with the stored `sync_token` unchanged: Google or the connection to it failed, so Google retries the notification.
+- `503`, with the stored `sync_token` unchanged: Google, the connection to it, or a delivery to Sentience failed, so Google retries the notification.
 - When Google answers `410` because it no longer honors the `sync_token`, the app clears it, reads every event to get a fresh one, stores it, and answers `200`. If that read fails, the `sync_token` stays cleared and the next notification for the calendar does the full read.
+
+## Conflicts
+
+For each changed timed event, the app reads the events on the same calendar that overlap it. A cancelled event, a transparent ("Free") one, a recurring series, and an all-day event are left out, both as the changed event and as the one it overlaps. Times are half-open, so meetings that only touch don't conflict, and a conflict whose overlap has already ended is not raised. A meeting never conflicts with itself or with another copy of its invitation.
+
+Each event is classified `internal` or `external_mixed`: external when its organizer or any attendee, other than a room or the operator's own calendar, has an email domain that isn't `GOOGLE_WORKSPACE_DOMAIN` (compared without regard to case; a subdomain is outside). Two external events call for the `irreconcilable` policy, one of each for `never_move_external`, and two internal ones for `full_evaluation`.
+
+Every overlapping pair is one conflict, delivered as one call of Sentience's `ask_sentience` tool over a Streamable HTTP session to `SENTIENCE_MCP_URL`, with the stored access token and a single `message` argument. The message is the fixed instruction, the policy's sentence, and a JSON payload of the two events, with times in the primary calendar's time zone, as the PRD's Conflict Message Contract defines. It carries no description, location, conference link, or attachment. A call that returns a result that isn't an error delivers the conflict, and the app then records the conflict's hash in `processed_events`; Sentience's reply is not read or kept. A conflict whose hash is recorded is not sent again, so a repeated notification, or a title change that leaves the classification as it was, dispatches nothing. A change to either event's time or classification does. If Sentience isn't connected or a call fails, that conflict isn't recorded and the notification is answered `503`; the conflicts delivered before it stay recorded.
 
 Notifications are processed one at a time across the app, so each waits for the one before it.
