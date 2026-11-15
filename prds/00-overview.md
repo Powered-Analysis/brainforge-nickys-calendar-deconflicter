@@ -93,6 +93,8 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 
 
 * **Remote MCP Session Dispatch (P0):** Initialize an MCP client connection to `https://mcp.sentience.com/mcp` using Streamable HTTP, authenticating requests with `Authorization: Bearer <access_token>`. Dispatch the structured conflict payload.
+* **Dispatch Tool Call (P0):** A conflict is one pair of overlapping events, so an event that overlaps several others produces one conflict per pair. Each conflict is dispatched as one `tools/call` of Sentience's `ask_sentience` tool with a single argument, `message`, holding the text defined under Conflict Message Contract. `thread_id` is never sent, so every conflict opens its own Sentience chat. The dispatcher calls no other Sentience tool: it never calls `read_thread`, and it stores no thread id.
+* **Delivery (P0):** A conflict is delivered when the tool call returns a result that is not an error. Sentience's reply and its "still pending" note both count, and the dispatcher reads neither: what Sentience decides is never parsed, stored, or acted on. A conflict's `processed_events` entry is written only once the conflict is delivered. When the call fails (a transport error, an authorization failure that a token refresh does not cure, or an error result), the conflict is not recorded, the calendar's `syncToken` is not advanced, and the webhook answers `503`. Google retries a `503`, and any later notification for that calendar re-reads the same delta, so an undelivered conflict is dispatched again and a delivered one is not.
 
 ##### Sentience Agent Decision Domain & Delivery (Priority: P0)
 
@@ -119,7 +121,7 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 
 
 Ensures the machine scales to zero when idle ($0 CPU/$0 RAM) while the Fly Proxy wakes it via memory snapshot in 200–400 ms upon incoming webhook requests or OAuth callbacks.
-* **External Watch Renewal Ping (P0):** An external runner pings `POST /internal/renew-watches` every 3 days to wake the suspended machine, renew all active Google Calendar watch channels in Turso, and allow it to suspend again.
+* **External Watch Renewal Ping (P0):** A scheduled GitHub Actions workflow in this repository, `.github/workflows/renew-watches.yml`, pings `POST /internal/renew-watches` every 3 days to wake the suspended machine, renew all active Google Calendar watch channels in Turso, and allow it to suspend again. The workflow takes the app's origin and the bearer token from the repository secrets `PUBLIC_BASE_URL` and `INTERNAL_CRON_SECRET`, and its run fails on any answer that is not 2xx. It is enabled as the last step of First-Time Setup. *Accepted risk:* GitHub disables a scheduled workflow in a public repository after 60 days without repository activity. From then on no channel is renewed, and conflicts stop being detected once the channels expire, until the operator re-enables the workflow.
 * **Renewal Ping Authentication (P0):** `POST /internal/renew-watches` accepts only a request that carries `Authorization: Bearer <token>` with a token equal to `INTERNAL_CRON_SECRET`. The two are compared in constant time, so the time a rejection takes reveals nothing about the secret. A request whose token is missing, malformed, or wrong gets `401` with `WWW-Authenticate: Bearer` and renews nothing. When `INTERNAL_CRON_SECRET` is unset or empty, every request gets `500` and renews nothing, so a deployment that lacks the secret is never open.
 * **Turso (libSQL) Data Layer (P0):** Store multi-calendar state, sync cursors, watch channels, Sentience OAuth tokens, and deduplication logs in Turso.
 
@@ -148,6 +150,20 @@ python -m dispatcher auth sentience
 python -m dispatcher calendar attach --auto-discover
 
 ```
+
+
+
+5. User schedules the renewal ping, once the app is deployed and its calendars are attached. The schedule is the workflow `.github/workflows/renew-watches.yml`, which stays disabled until this step:
+```bash
+gh secret set PUBLIC_BASE_URL        # the app's origin, as in .env
+gh secret set INTERNAL_CRON_SECRET   # the same value as the Fly secret
+gh workflow enable renew-watches.yml
+gh workflow run renew-watches.yml    # one run now, which must succeed
+
+```
+
+
+* Until this step is done, nothing renews the watch channels that step 4 created, and each stops notifying when it expires.
 
 
 
@@ -195,6 +211,57 @@ python -m dispatcher calendar attach new-calendar-id@group.calendar.google.com
 
 * **Separation of Concerns:** The dispatcher is an unopinionated pipeline: it detects overlaps, enforces domain classifications, verifies all-day event transparency, and invokes Sentience over MCP. All heuristics regarding lookahead horizons, meeting inertia, VIP sensitivity, and notification presentation live inside the stateful Sentience agent.
 * **All-Day Event Arithmetic:** Google Calendar all-day events provide `start.date` and `end.date` (exclusive). For conflict detection, the dispatcher normalizes an opaque all-day event into a localized datetime interval spanning `start.dateT00:00:00` to `end.dateT00:00:00` in the user's primary calendar timezone.
+* **Conflict Message Contract:** The `message` argument of `ask_sentience` is plain text in three parts, in this order, each separated from the next by one blank line.
+
+  1. *The instruction*, the same for every conflict:
+```text
+Automated message from the calendar conflict dispatcher. Two of the operator's commitments overlap. Handle this conflict under the operator's standing guidelines for calendar conflicts and surface the outcome to the operator. Do not change either event, respond to either invitation, or contact any attendee.
+```
+
+  2. *The policy sentence* for the conflict, chosen by the classifications of its two events. `policy` is the stored value the payload carries; the sentence is sent verbatim.
+
+| Conflict | `policy` | Policy sentence |
+|---|---|---|
+| External/Mixed vs. External/Mixed | `irreconcilable` | `Policy: Irreconcilable Conflict. Both meetings are External or Mixed. Recommend moving neither, and surface the conflict for the operator to resolve manually.` |
+| External/Mixed vs. Internal | `never_move_external` | `Policy: never recommend moving the External or Mixed meeting. Decide whether the Internal meeting can move, or whether its inertia makes the conflict irreconcilable.` |
+| Internal vs. Internal, which includes every cross-calendar conflict | `full_evaluation` | `Policy: both meetings are Internal. Weigh their inertia and suggest new times for the more flexible one.` |
+
+  3. *The payload:* a fenced `json` code block holding one JSON object with exactly these fields. The closing fence ends the message.
+```json
+{
+  "policy": "never_move_external",
+  "cross_calendar": false,
+  "overlap": {"start": "2026-03-02T10:00:00-05:00", "end": "2026-03-02T10:30:00-05:00"},
+  "incoming": {
+    "calendar_id": "operator@example.com",
+    "event_id": "4kq1t8f0example",
+    "summary": "Vendor review",
+    "start": "2026-03-02T10:00:00-05:00",
+    "end": "2026-03-02T11:00:00-05:00",
+    "all_day": false,
+    "classification": "external_mixed",
+    "organizer": "pat@example.org",
+    "attendees": ["operator@example.com", "pat@example.org"]
+  },
+  "existing": {
+    "calendar_id": "operator@example.com",
+    "event_id": "7hd02mzexample",
+    "summary": "Team sync",
+    "start": "2026-03-02T09:30:00-05:00",
+    "end": "2026-03-02T10:30:00-05:00",
+    "all_day": false,
+    "classification": "internal",
+    "organizer": "operator@example.com",
+    "attendees": ["operator@example.com", "sam@example.com"]
+  }
+}
+```
+
+  * `incoming` is the created or updated event the delta returned, and `existing` is the event it overlaps.
+  * `classification` is `internal` (displayed as Internal) or `external_mixed` (displayed as External / Mixed). In a cross-calendar conflict both events are `internal`, and `cross_calendar` is `true`.
+  * `start`, `end`, and both ends of `overlap` are RFC 3339 timestamps carrying the UTC offset of the user's primary calendar timezone. For an all-day event `all_day` is `true`, and `start` and `end` are the interval All-Day Event Arithmetic gives it.
+  * `summary` is the event's title, or `""` when Google returns none. `organizer` is the organizer's email address, or `null` when Google returns none. `attendees` holds every attendee's email address in the order Google returns them, and is `[]` for an event without attendees.
+  * Nothing else about an event is sent: no description, location, conference link, or attachment. An invitation's text is written by whoever sent it, so the dispatcher passes Sentience the identifiers it needs to look the event up, and no free text beyond the title.
 * **Database Schema (Turso):**
 ```sql
 CREATE TABLE calendars (
@@ -266,9 +333,10 @@ CREATE TABLE processed_events (
 * *Stack:* Python, FastAPI, `uv`.
 
 
-* **External Cron Runner (GitHub Actions / Cloudflare Worker):**
-* *Role:* Scheduled wake ping triggering `POST /internal/renew-watches` every 3 days.
-* *Auth:* The bearer secret defined under Renewal Ping Authentication, which the runner holds alongside the Fly app.
+* **External Cron Runner (GitHub Actions):**
+* *Role:* Scheduled wake ping triggering `POST /internal/renew-watches` every 3 days, from `.github/workflows/renew-watches.yml`.
+* *Auth:* The bearer secret defined under Renewal Ping Authentication, held as the repository secret `INTERNAL_CRON_SECRET`.
+* *Config:* The repository secret `PUBLIC_BASE_URL`, the app's origin.
 
 
 

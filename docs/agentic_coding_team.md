@@ -24,7 +24,7 @@ The PRD describes the product. Five points bear on how this team works:
 
 - **The team builds the dispatcher and nothing inside Sentience.** The PRD's *Sentience Agent Decision Domain & Delivery* group describes what the owner's stateful Sentience agent does with a dispatched conflict: inertia, the search horizon, `suggest_time`, and surfacing. No issue implements, configures, or simulates any of it. The dispatcher's part of that group is the Zero Mutation Guarantee and the policy tags its payload carries.
 - **Zero mutation is checked on every PR.** The app's only writes to Google are `events.watch` and `channels.stop`, which open and close notification channels. A PR that adds any other Google write, or any call to Gmail, gets a `needs-change (security):` finding from the SA.
-- **The product's runtime is the owner's.** It is a Fly.io machine, a hosted database, and an external scheduler, all deployed by the owner (see [Completion](#completion)). This team's GitHub Actions are development infrastructure, and the shipped app never depends on them.
+- **The product's runtime is the owner's.** It is a Fly.io machine, a hosted database, and the renewal-ping workflow `renew-watches.yml`, all deployed by the owner (see [Completion](#completion)). The tick and report workflows are development infrastructure, and the shipped app never depends on them.
 - **Tests are never co-written with the code they test.** The SDET is the sanctioned test author precisely because it works in a separate loop. The FSE and SA never write tests.
 - **An Outstanding Question is deferred, not contradictory.** The PRD's Outstanding Questions are decisions the owner hasn't made. Where one bears on an issue, it's handled like any place the PRD is silent (see [Merge review](#merge-review)): the engineers decide technical implementation, and the PM rules on behavior. The PM records the choice as a `Ruling:` on the issue, so the owner reads it in the next progress report. It isn't a reason to escalate.
 
@@ -52,7 +52,7 @@ pm → (fse ∥ sdet) → sa        # fse and sdet need pm; sa needs fse
 - **Triggers.** The tick runs only on `workflow_dispatch`, and every tick's final step dispatches the next one, so the owner's one dispatch keeps the team running until it's [done](#completion). When a tick succeeds and at least one agent job did work, the next tick starts at once, so work flows back-to-back. A tick that found no work, or that failed, waits **10 minutes** first. That wait is the retry delay after a failure, and it's how soon the team picks up the owner's actions, such as a removed `needs-human` label. An idle tick costs little, because every guard exits before invoking an agent. The dispatch uses `TICK_TOKEN` (see [Credentials](#credentials)).
 - **Stopping and restarting.** The chain has no other source of ticks. Cancelling the running tick, or disabling the workflow, stops the team. So does a tick whose final step can't run or can't dispatch, for example when `TICK_TOKEN` has expired. The owner restarts the team by dispatching one tick.
 - **Concurrency.** A single concurrency group with `cancel-in-progress: false` means ticks never overlap.
-- **No other wiring.** No workflow is triggered by issue, PR, or review events. Handoffs between roles happen through state the next tick reads. The only other workflow is [`report.yml`](#progress-reports), which sends one email per run. The tick's final step dispatches it for progress reports and for [alerts](#alerts). It is outside the role loop and writes nothing to GitHub.
+- **No other wiring.** No workflow is triggered by issue, PR, or review events. Handoffs between roles happen through state the next tick reads. The team's only other workflow is [`report.yml`](#progress-reports), which sends one email per run. The tick's final step dispatches it for progress reports and for [alerts](#alerts). It is outside the role loop and writes nothing to GitHub. `renew-watches.yml` is the product's scheduler, not the team's (see [Completion](#completion)).
 
 #### Labels and handoffs
 
@@ -140,7 +140,7 @@ When the tick's last step finds the team done, it dispatches `report.yml` for a 
 
 **Deployment and setup belong to the owner.** The PRD's First-Time Setup runs on accounts only the owner holds: deploying to Fly.io and setting its secrets, authorizing Google, connecting Sentience, attaching calendars, and scheduling the watch-renewal ping. So none of those is ever an issue. The team builds every command, route, and file those steps use (the `dispatcher` CLI, the image, `fly.toml`), and the README says how to run each one. The final report ends with those steps.
 
-The scheduler of the watch-renewal ping is the owner's too. The team builds `POST /internal/renew-watches` and documents the request the scheduler must send. A workflow that sends it would live under `.github/workflows/`, which no agent can change.
+The scheduler of the watch-renewal ping is the owner's too. It is `.github/workflows/renew-watches.yml`, which stays disabled until the owner sets its two secrets and enables it after the first deploy (the PRD's First-Time Setup). The team builds `POST /internal/renew-watches`, the endpoint it calls, and never changes the workflow: no agent token can.
 
 Two kinds of checks also happen after deployment, run by the owner:
 - live checks that need the owner's accounts: a real notification from Google reaching the webhook, a calendar's `syncToken` deltas, the Sentience authorization and token refresh, a dispatched conflict arriving in Sentience, and the Fly machine suspending and waking;
@@ -242,7 +242,7 @@ The first infrastructure issue proves that `turso-serverless` connects to the co
 
 **Running the suite.** `bash scripts/suite.sh` runs the full suite the way the [test gate](#test-gate) does: split round-robin across one pytest process per CPU, each with its own fresh libSQL container. Every role runs the full suite this way and no other. While iterating, run only the tests the change touches, with `uv run pytest <path>`. Run the full suite once, in the foreground, before requesting review or committing; it finishes well within the Bash tool's 10-minute default. Never start it in the background and poll it with `sleep`. Never rerun it on `main` to learn which failures predate a branch: the test gate already compares the base to the head.
 
-**No owner credential reaches CI.** The app works on the owner's calendars, the owner's Sentience account, and the production database. None of their credentials is ever a repository secret: not the Google client or refresh token, not a Sentience token, not the hosted Turso token, not the Fly token, and not the cron secret. Each of these reasons is enough on its own:
+**No owner credential reaches CI.** The app works on the owner's calendars, the owner's Sentience account, and the production database. No agent job, and no job that runs a PR's code, ever holds one of their credentials: not the Google client or refresh token, not a Sentience token, not the hosted Turso token, not the Fly token, and not the cron secret. Each of these reasons is enough on its own:
 
 - **A calendar event is text anyone can write.** An invitation's title, description, and attendee list come from whoever sent it. An agent that read real events would read untrusted content while holding a token that pushes code.
 - **The repository is public.** So are its Actions logs, and live-check output goes into PR descriptions ([convention 8](conventions.md#8-nothing-private-in-a-public-repository)).
@@ -256,6 +256,8 @@ The first infrastructure issue proves that `turso-serverless` connects to the co
 Google's APIs have no such surface: every Calendar API call needs the owner's token. The app's Google requests are checked against Google's current API reference ([convention 9](conventions.md#9-use-whats-current-not-just-what-still-works)), and against the live service only by the owner.
 
 Every other live check is the owner's, after deployment (see [Completion](#completion)).
+
+One product credential does become a repository secret, after deployment: `INTERNAL_CRON_SECRET`, with the app's address in `PUBLIC_BASE_URL`, for `renew-watches.yml` alone. GitHub gives a secret only to a workflow that names it. Neither of the team's workflows names these two, and no agent can change a workflow.
 
 **App settings.** `.env.example` at the repository root lists every setting the app reads. The owner provisions exactly those names, in a local `.env` and as Fly secrets, so the app reads those names and no others. A setting that isn't listed needs the owner (see [Escalation](#escalation)). In CI only `TURSO_DATABASE_URL` is set. Tests set the others themselves, and the FSE's live checks use fictional values (convention 8).
 
@@ -314,10 +316,11 @@ The owner is in the bypass team because the owner's changes to `prds/`, `docs/`,
 | The Claude credential: one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, never both | every agent job, and `report.yml`'s reporter step |
 | `WOZCODE_API_KEY` | the PM, FSE, SA, and SDET jobs |
 | `RESEND_API_KEY` (Sending Access only), `REPORT_TO` | `report.yml`'s send step only |
+| `INTERNAL_CRON_SECRET`, `PUBLIC_BASE_URL` (set by the owner after deployment) | `renew-watches.yml` only |
 
 `REPORT_TO` is the owner's inbox. It's a secret, not a variable, so that GitHub masks the address in the public Actions logs, and so it never appears in this public document. Without a verified sending domain, Resend delivers only to the address its account was registered with, so the Resend account uses the same address.
 
-No secret of the product's own is here: the owner's Google, Sentience, Turso, and Fly credentials never reach CI (see [CI environment](#ci-environment)).
+The owner's Google, Sentience, Turso, and Fly credentials are not here, and never reach CI (see [CI environment](#ci-environment)).
 
 #### Progress reports
 

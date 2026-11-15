@@ -1,0 +1,37 @@
+# The product's watch-renewal ping (prds/00-overview.md, External Watch Renewal
+# Ping). It belongs to the owner, not to the agent team: it stays disabled until
+# the owner sets its two secrets and enables it, as the last step of the PRD's
+# First-Time Setup.
+#
+# GitHub disables a scheduled workflow in a public repository after 60 days
+# without repository activity. The PRD records that as an accepted risk.
+name: renew-watches
+
+on:
+  schedule:
+    # 04:00 UTC on days 1, 4, 7, ... of each month: never more than 3 days apart.
+    - cron: "0 4 */3 * *"
+  workflow_dispatch:
+
+# The job calls the app and nothing on GitHub.
+permissions: {}
+
+concurrency:
+  group: renew-watches
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The log is public: the response body is discarded, and both values are
+      # secrets, so GitHub masks them.
+      - name: Ping the renewal endpoint
+        env:
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+        run: |
+          curl --fail --silent --show-error --max-time 120 --output /dev/null \
+            -X POST "${PUBLIC_BASE_URL:?}/internal/renew-watches" \
+            -H "Authorization: Bearer ${INTERNAL_CRON_SECRET:?}"
