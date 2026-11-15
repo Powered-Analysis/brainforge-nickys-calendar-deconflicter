@@ -29,6 +29,10 @@ class TokenRequestFailed(OperatorError):
     """Sentience's token endpoint did not return usable tokens."""
 
 
+class NotConnected(OperatorError):
+    """No Sentience connection is stored, so the operator must connect."""
+
+
 class AuthExpired(OperatorError):
     """Sentience has refused the refresh token, so the operator must reconnect."""
 
@@ -269,15 +273,21 @@ def _expire(client: httpx2.Client, now: int) -> None:
         )
 
 
+def _stored_auth() -> db.StoredAuth:
+    auth = db.get_sentience_auth()
+    if auth is None:
+        raise NotConnected("Sentience is not connected")
+    return auth
+
+
 def _refresh(now: int) -> str:
     """Renew the stored tokens and return the new access token.
 
     Raises AuthExpired, after marking access expired, when Sentience refuses the refresh token,
-    and TokenRequestFailed, with nothing changed, for any other failure.
+    NotConnected when nothing is stored, and TokenRequestFailed, with nothing changed, for any
+    other failure.
     """
-    auth = db.get_sentience_auth()
-    if auth is None:
-        raise TokenRequestFailed("Sentience is not connected")
+    auth = _stored_auth()
     if auth.refresh_token is None:
         raise TokenRequestFailed("Sentience gave no refresh token")
     with http.client() as client:
@@ -304,9 +314,7 @@ def deliver(message: str) -> None:
     """
     if db.is_sentience_auth_expired():
         raise AuthExpired("Sentience access has expired and must be reauthorized")
-    auth = db.get_sentience_auth()
-    if auth is None:
-        raise sentience_mcp.DispatchFailed("Sentience is not connected")
+    auth = _stored_auth()
     now = int(time.time())
     access_token = auth.access_token
     if needs_refresh(auth.expires_at, now):
