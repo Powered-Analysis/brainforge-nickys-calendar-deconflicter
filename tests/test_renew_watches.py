@@ -129,7 +129,7 @@ def test_app_starts_with_no_database_setting(monkeypatch):
     monkeypatch.setenv("INTERNAL_CRON_SECRET", SECRET)
     with TestClient(app) as test_client:
         response = test_client.post(URL, headers={"Authorization": f"Bearer {SECRET}"})
-    assert 200 <= response.status_code < 300
+    assert response.status_code == 500
 
 
 def test_app_startup_creates_the_schema(monkeypatch):
