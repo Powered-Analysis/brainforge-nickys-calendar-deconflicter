@@ -21,7 +21,7 @@ Reach for the standard library or an existing dependency first. Add a library on
 Before writing an operation, search for an existing implementation and use it. When an issue's work turns up two approaches to the same operation, consolidate them if that's within the issue's scope. Otherwise, raise it as a `levelup`. For example:
 
 - every call to Google goes through the one Google Calendar module;
-- every call to Sentience's auth server goes through the shared `httpx` client;
+- every call to Sentience's auth server and to Resend goes through the shared `httpx` client;
 - every Sentience MCP session goes through the one dispatch function;
 - every database access goes through the one database module;
 - an overlap, an all-day interval, and an attendee classification are each computed in one place;
@@ -44,7 +44,7 @@ The README, `CLAUDE.md`, and docstrings are rewritten in place as the code chang
 
 No speculative config options, flags, extension points, or abstractions for hypothetical future needs. This is what keeps convention 1 from tipping into over-abstraction: abstract what's actually duplicated, not what might someday be.
 
-The PRD's Non-Goals are part of this convention. The dispatcher holds no inertia, VIP, or seniority rule, renders no notification, and never writes to an event or to Gmail.
+The PRD's Non-Goals are part of this convention. The dispatcher holds no inertia, VIP, or seniority rule, renders no conflict notification, and never writes to an event or to Gmail.
 
 ### 7. Formatting and linting are the tool's job
 

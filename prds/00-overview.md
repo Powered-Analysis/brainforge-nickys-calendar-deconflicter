@@ -2,7 +2,7 @@
 
 #### tl;dr
 
-A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google Calendar invitations across any user-owned calendar, processes all-day busy blocks and cross-calendar overlaps, and dispatches a stateful Sentience agent via remote MCP to evaluate rescheduling feasibility. Sentience independently governs meeting inertia and horizon tuning—strictly enforcing that External or Mixed meetings are never recommended to move over Internal meetings—and queries candidate openings via Google Calendar MCP's `suggest_time`. Sentience directly determines how to surface actionable recommendations or explicit "Irreconcilable Conflict" advisories to the operator, while the pipeline guarantees zero automated calendar mutations or outbound communications.
+A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google Calendar invitations across any user-owned calendar, processes all-day busy blocks and cross-calendar overlaps, and dispatches a stateful Sentience agent via remote MCP to evaluate rescheduling feasibility. Sentience independently governs meeting inertia and horizon tuning—strictly enforcing that External or Mixed meetings are never recommended to move over Internal meetings—and queries candidate openings via Google Calendar MCP's `suggest_time`. Sentience directly determines how to surface actionable recommendations or explicit "Irreconcilable Conflict" advisories to the operator, while the pipeline guarantees zero automated calendar mutations or communications on the operator's behalf.
 
 ---
 
@@ -12,7 +12,7 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 
 * **Zero-DevOps Calendar Provisioning:** Onboard any new calendar owned by the user in under 10 seconds via a single CLI command or auto-discovery call, requiring zero infrastructure redeployments, configuration edits, or environment variable modifications.
 * **Triage Latency:** Deliver structured conflict analyses and candidate alternative slots to the Sentience agent within 30 seconds of an incoming overlapping invitation hitting any registered calendar.
-* **Zero Unauthorized Mutations:** Maintain a 100% human-in-the-loop guarantee—zero automated calendar RSVP updates (no automated `tentative`, `declined`, or `accepted` mutations) and zero automated outbound emails or drafts.
+* **Zero Unauthorized Mutations:** Maintain a 100% human-in-the-loop guarantee—zero automated calendar RSVP updates (no automated `tentative`, `declined`, or `accepted` mutations) and zero automated emails or drafts to anyone but the operator.
 * **Full Conflict Visibility:** Ensure 100% of genuine time collisions—including all-day events marked "Busy" and cross-calendar overlaps—are surfaced to the user via Sentience.
 * **Irreconcilable Triage Completeness:** Classify and surface 100% of non-reschedulable conflicts (e.g., External-vs-External overlaps or high-inertia Internal meetings) as actionable, first-class irreconcilable events.
 
@@ -25,9 +25,9 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 
 ##### Non-Goals
 
-* **Autonomous Outbound Actions:** No automated sending of emails, drafting of messages in Gmail, or mutation of event RSVP states.
+* **Autonomous Outbound Actions:** No automated sending of emails to attendees or to anyone else on the operator's behalf, drafting of messages in Gmail, or mutation of event RSVP states.
 * **Application-Level Inertia Rules:** The dispatcher app will not enforce hardcoded rules for VIPs, stakeholder seniority, or attendee thresholds; all inertia heuristics belong exclusively to Sentience.
-* **Application-Level Notification UI:** The dispatcher does not manage client-side UI, desktop notification daemons, or messaging webhooks; Sentience selects and executes its own surfacing mechanism.
+* **Application-Level Notification UI:** The dispatcher does not manage client-side UI, desktop notification daemons, or messaging webhooks; Sentience selects and executes its own surfacing mechanism. The one message the dispatcher sends itself is the Re-Authorization Alert, which cannot go through Sentience.
 * **Headless Browser Scraping:** No automation or reverse-engineering of Google Calendar’s web UI or the proprietary "Propose a new time" web button.
 * **Multi-Tenant SaaS Management:** Designed specifically as a single-operator pipeline running on personal and internal Workspace infrastructure.
 
@@ -95,6 +95,11 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 * **Remote MCP Session Dispatch (P0):** Initialize an MCP client connection to `https://mcp.sentience.com/mcp` using Streamable HTTP, authenticating requests with `Authorization: Bearer <access_token>`. Dispatch the structured conflict payload.
 * **Dispatch Tool Call (P0):** A conflict is one pair of overlapping events, so an event that overlaps several others produces one conflict per pair. Each conflict is dispatched as one `tools/call` of Sentience's `ask_sentience` tool with a single argument, `message`, holding the text defined under Conflict Message Contract. `thread_id` is never sent, so every conflict opens its own Sentience chat. The dispatcher calls no other Sentience tool: it never calls `read_thread`, and it stores no thread id.
 * **Delivery (P0):** A conflict is delivered when the tool call returns a result that is not an error. Sentience's reply and its "still pending" note both count, and the dispatcher reads neither: what Sentience decides is never parsed, stored, or acted on. A conflict's `processed_events` entry is written only once the conflict is delivered. When the call fails (a transport error, an authorization failure that a token refresh does not cure, or an error result), the conflict is not recorded, the calendar's `syncToken` is not advanced, and the webhook answers `503`. Google retries a `503`, and any later notification for that calendar re-reads the same delta, so an undelivered conflict is dispatched again and a delivered one is not.
+* **Re-Authorization Alert (P0):** When a token refresh fails with `invalid_grant`, the dispatcher marks Sentience auth as expired and emails the operator, because Sentience is the one channel that is then closed.
+  * *The email* is sent through Resend's API with the key `RESEND_API_KEY`, to the address `ALERT_TO`, from `Calendar Deconflicter <onboarding@resend.dev>`, with the subject `[Calendar Deconflicter] Alert — Sentience needs re-authorization`. The sender and the subject prefix are those of the build team's reports, so the operator's existing mail filter catches it. The body is one sentence saying that conflicts are not being delivered, and the re-auth link `<PUBLIC_BASE_URL>/oauth/sentience/reauth`. It carries no event data.
+  * *One email per expiry:* it is sent when auth becomes expired, and not again while auth stays expired. A send that fails is logged and changes nothing else.
+  * *The standing signal:* while auth is expired, `POST /internal/renew-watches` still renews every channel and then answers `503`, so every scheduled run of the renewal workflow fails until the operator re-authorizes.
+  * *Recovery:* when re-authorization succeeds, the dispatcher processes the delta of every active calendar, so the conflicts that went undelivered are dispatched.
 
 ##### Sentience Agent Decision Domain & Delivery (Priority: P0)
 
@@ -106,7 +111,7 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 * *Outcome 2 (Irreconcilable Conflict):* Issued when two External/Mixed meetings collide, when an Internal meeting possesses too much inertia to move, or when zero alternative slots exist within the horizon.
 
 
-* **Zero Mutation Guarantee (P0):** The pipeline performs no write operations against Google Calendar RSVP statuses and creates no draft or outbound communications.
+* **Zero Mutation Guarantee (P0):** The pipeline performs no write operations against Google Calendar RSVP statuses and creates no draft. It sends nothing to anyone but the operator, and its one message to the operator is the Re-Authorization Alert.
 
 ##### Cloud Infrastructure & Serverless Scale-to-Zero (Priority: P0)
 
@@ -202,7 +207,7 @@ python -m dispatcher calendar attach new-calendar-id@group.calendar.google.com
 * **External-vs-External Collision:** Both meetings involve third parties. Sentience immediately surfaces an "Irreconcilable Conflict" briefing advising the user to choose which meeting to decline.
 * **All-Day Opaque Event Collision:** An invitation arrives overlapping with an all-day "Board Offsite" (marked Busy). The system treats the entire day as blocked and flags the conflict to Sentience.
 * **Cross-Calendar Collision:** A personal hold on Calendar B collides with an internal sync on Calendar A. Both are treated as Internal, allowing Sentience to evaluate which is more flexible.
-* **Sentience Re-Authentication Failure (Degraded Auth):** If Sentience revokes the refresh token (`401 invalid_grant`), the dispatcher marks auth as expired in Turso and generates an operational alert with a re-auth link: `https://<app>.fly.dev/oauth/sentience/reauth`.
+* **Sentience Re-Authentication Failure (Degraded Auth):** If Sentience revokes the refresh token (`401 invalid_grant`), the dispatcher marks auth as expired in Turso and sends the Re-Authorization Alert with its re-auth link: `https://<app>.fly.dev/oauth/sentience/reauth`.
 * **410 Gone Sync Invalidation:** If Google invalidates a calendar’s `syncToken`, catch the 410 error, clear the token in Turso, perform an immediate full sync to capture a fresh cursor, and resume delta monitoring without raising false alarms.
 
 ---
@@ -292,6 +297,11 @@ CREATE TABLE processed_events (
 ```
 
 
+* **Conflict De-duplication (`event_hash`):** `event_hash` identifies one conflict in the state it was dispatched in. It is the lowercase hex SHA-256 of a UTF-8 string built from five fields of each of the conflict's two events: `calendar_id`, `event_id`, `start`, `end`, and `classification`. The values are those of the Conflict Message Contract, except that `start` and `end` are written in UTC as `YYYY-MM-DDTHH:MM:SSZ`. The two events are taken in ascending order of (`calendar_id`, `event_id`), and all ten fields are joined with `|`.
+  * The same two events with unchanged times and classifications give the same hash, so a repeated notification, a replayed delta, and the full sync after a `410` dispatch nothing twice. The order makes the hash the same whichever event was the incoming one.
+  * A change to either event's time or classification gives a new hash, so the changed conflict is dispatched again. A change to a title or to attendees that leaves the classification as it was does not.
+  * The row's `calendar_id` is the incoming event's calendar, and `processed_at` is when the conflict was delivered.
+  * For the example payload of the Conflict Message Contract, the string is `operator@example.com|4kq1t8f0example|2026-03-02T15:00:00Z|2026-03-02T16:00:00Z|external_mixed|operator@example.com|7hd02mzexample|2026-03-02T14:30:00Z|2026-03-02T15:30:00Z|internal` and the hash is `927281338afebdb824a43ed675f08c7497832f15cb54a6f7b4dd770b2d8e5fad`.
 * **Dual OAuth Model:**
 * *Google Workspace:* Standard Desktop Client OAuth (offline refresh token in Fly secrets). No public Google redirect URIs required.
 * *Sentience MCP:* RFC 7591 Dynamic Client Registration and RFC 7636 Authorization Code with PKCE. Uses public redirect URI `GET /oauth/sentience/callback` on Fly.io.
@@ -321,6 +331,12 @@ CREATE TABLE processed_events (
 * **Google Remote Calendar MCP (`calendarmcp.googleapis.com`):**
 * *Role:* Execute attendee availability queries via `suggest_time`.
 * *Protocol:* Model Context Protocol (Streamable HTTP / SSE).
+
+
+* **Resend (`https://api.resend.com`):**
+* *Role:* Delivers the Re-Authorization Alert to the operator's inbox.
+* *Library:* `httpx`.
+* *Auth:* `RESEND_API_KEY`, a key with sending access only.
 
 
 * **Turso Cloud (libSQL):**

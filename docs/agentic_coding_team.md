@@ -23,7 +23,7 @@ This is the operating agreement for a **fully autonomous** four-agent team that 
 The PRD describes the product. Five points bear on how this team works:
 
 - **The team builds the dispatcher and nothing inside Sentience.** The PRD's *Sentience Agent Decision Domain & Delivery* group describes what the owner's stateful Sentience agent does with a dispatched conflict: inertia, the search horizon, `suggest_time`, and surfacing. No issue implements, configures, or simulates any of it. The dispatcher's part of that group is the Zero Mutation Guarantee and the policy tags its payload carries.
-- **Zero mutation is checked on every PR.** The app's only writes to Google are `events.watch` and `channels.stop`, which open and close notification channels. A PR that adds any other Google write, or any call to Gmail, gets a `needs-change (security):` finding from the SA.
+- **Zero mutation is checked on every PR.** The app's only writes to Google are `events.watch` and `channels.stop`, which open and close notification channels. Its only message to anyone is the Re-Authorization Alert, to the operator's own inbox. A PR that adds any other Google write, any call to Gmail, or any other outbound message gets a `needs-change (security):` finding from the SA.
 - **The product's runtime is the owner's.** It is a Fly.io machine, a hosted database, and the renewal-ping workflow `renew-watches.yml`, all deployed by the owner (see [Completion](#completion)). The tick and report workflows are development infrastructure, and the shipped app never depends on them.
 - **Tests are never co-written with the code they test.** The SDET is the sanctioned test author precisely because it works in a separate loop. The FSE and SA never write tests.
 - **An Outstanding Question is deferred, not contradictory.** The PRD's Outstanding Questions are decisions the owner hasn't made. Where one bears on an issue, it's handled like any place the PRD is silent (see [Merge review](#merge-review)): the engineers decide technical implementation, and the PM rules on behavior. The PM records the choice as a `Ruling:` on the issue, so the owner reads it in the next progress report. It isn't a reason to escalate.
@@ -143,7 +143,7 @@ When the tick's last step finds the team done, it dispatches `report.yml` for a 
 The scheduler of the watch-renewal ping is the owner's too. It is `.github/workflows/renew-watches.yml`, which stays disabled until the owner sets its two secrets and enables it after the first deploy (the PRD's First-Time Setup). The team builds `POST /internal/renew-watches`, the endpoint it calls, and never changes the workflow: no agent token can.
 
 Two kinds of checks also happen after deployment, run by the owner:
-- live checks that need the owner's accounts: a real notification from Google reaching the webhook, a calendar's `syncToken` deltas, the Sentience authorization and token refresh, a dispatched conflict arriving in Sentience, and the Fly machine suspending and waking;
+- live checks that need the owner's accounts: a real notification from Google reaching the webhook, a calendar's `syncToken` deltas, the Sentience authorization and token refresh, a dispatched conflict arriving in Sentience, the re-authorization alert reaching the inbox, and the Fly machine suspending and waking;
 - judging what Sentience does with a dispatched conflict: its inertia calls, its search horizon, the slots it proposes, and how it surfaces the outcome. That is Sentience's decision domain, and the team builds none of it (see [How the PRD applies to this team](#how-the-prd-applies-to-this-team)).
 
 The FSE notes in each PR description which checks it couldn't run. The final report lists both kinds of checks.
@@ -234,6 +234,7 @@ The first infrastructure issue proves that `turso-serverless` connects to the co
 |---|---|
 | Google Calendar API (`CalendarList`, `events.list`, `events.watch`, `channels.stop`) | the one module that calls Google, through an injected HTTP transport |
 | Sentience's auth server (registration, token exchange, refresh) | an injected `httpx` transport |
+| Resend (the re-authorization alert) | an injected `httpx` transport |
 | The Sentience MCP session | the one function that opens a session and dispatches a payload, the app's only call into an MCP client |
 | The operator's browser (`auth sentience`) | the one function that opens a URL |
 | Database | the libSQL service container |
@@ -242,7 +243,7 @@ The first infrastructure issue proves that `turso-serverless` connects to the co
 
 **Running the suite.** `bash scripts/suite.sh` runs the full suite the way the [test gate](#test-gate) does: split round-robin across one pytest process per CPU, each with its own fresh libSQL container. Every role runs the full suite this way and no other. While iterating, run only the tests the change touches, with `uv run pytest <path>`. Run the full suite once, in the foreground, before requesting review or committing; it finishes well within the Bash tool's 10-minute default. Never start it in the background and poll it with `sleep`. Never rerun it on `main` to learn which failures predate a branch: the test gate already compares the base to the head.
 
-**No owner credential reaches CI.** The app works on the owner's calendars, the owner's Sentience account, and the production database. No agent job, and no job that runs a PR's code, ever holds one of their credentials: not the Google client or refresh token, not a Sentience token, not the hosted Turso token, not the Fly token, and not the cron secret. Each of these reasons is enough on its own:
+**No owner credential reaches CI.** The app works on the owner's calendars, the owner's Sentience account, and the production database. No agent job, and no job that runs a PR's code, ever holds one of their credentials: not the Google client or refresh token, not a Sentience token, not the hosted Turso token, not the Fly token, not the app's Resend key, and not the cron secret. Each of these reasons is enough on its own:
 
 - **A calendar event is text anyone can write.** An invitation's title, description, and attendee list come from whoever sent it. An agent that read real events would read untrusted content while holding a token that pushes code.
 - **The repository is public.** So are its Actions logs, and live-check output goes into PR descriptions ([convention 8](conventions.md#8-nothing-private-in-a-public-repository)).
