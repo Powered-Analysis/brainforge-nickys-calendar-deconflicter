@@ -68,10 +68,17 @@ def _attach_entry(
         db.save_attached_calendar(
             calendar_id, channel_id, resource_id, expiration, sync_token, now
         )
-    except Exception:
+    except Exception as save_error:
         # Without a row, renewal and detach could never find the channel, and Google would keep
         # sending notifications for it until it expires.
-        google.stop_channel(channel_id, resource_id)
+        try:
+            google.stop_channel(channel_id, resource_id)
+        except GoogleRequestFailed as stop_error:
+            # Naming both failures keeps the operator from reading this as a Google-only error.
+            raise GoogleRequestFailed(
+                f"saving the calendar failed ({save_error}), and channel {channel_id} could "
+                f"not be stopped, so Google may still send notifications for it: {stop_error}"
+            ) from stop_error
         raise
     return Outcome(calendar_id, "attached", title(entry))
 
