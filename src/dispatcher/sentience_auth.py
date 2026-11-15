@@ -4,15 +4,19 @@ import base64
 import hashlib
 import logging
 import secrets
+import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
 
-from dispatcher import db, settings
+from dispatcher import alert, db, http, sentience_mcp, settings
 from dispatcher.errors import OperatorError
 
 CALLBACK_PATH = "/oauth/sentience/callback"
+REAUTH_PATH = "/oauth/sentience/reauth"
+# Token Rotation & Refresh Management: a token is renewed this long before it lapses.
+REFRESH_MARGIN_SECONDS = 60
 CLIENT_NAME = "Calendar Deconflicter"
 SCOPE = "sentience"
 
@@ -23,6 +27,10 @@ class TokenRequestFailed(OperatorError):
     """Sentience's token endpoint did not return usable tokens."""
 
 
+class AuthExpired(OperatorError):
+    """Sentience has refused the refresh token, so the operator must reconnect."""
+
+
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
@@ -30,7 +38,7 @@ class Tokens:
     expires_at: int
 
 
-# The functions up to `tokens_from_response` decide without touching the network or the database.
+# The functions up to `_json_object` decide without touching the network or the database.
 
 
 def new_code_verifier() -> str:
@@ -49,6 +57,22 @@ def endpoint(issuer: str, name: str) -> str:
 
 def callback_url(public_base_url: str) -> str:
     return f"{public_base_url.rstrip('/')}{CALLBACK_PATH}"
+
+
+def reauth_url(public_base_url: str) -> str:
+    return f"{public_base_url.rstrip('/')}{REAUTH_PATH}"
+
+
+def needs_refresh(expires_at: int, now: int) -> bool:
+    return expires_at <= now + REFRESH_MARGIN_SECONDS
+
+
+def refresh_request_form(client_id: str, refresh_token: str) -> dict:
+    return {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+    }
 
 
 def registration_body(redirect_uri: str) -> dict:
@@ -118,6 +142,14 @@ def _json_object(response: httpx.Response) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def is_invalid_grant(response: httpx.Response) -> bool:
+    # OAuth sends `invalid_grant` with 400 and the PRD names 401: the error decides, not the status.
+    return (
+        not response.is_success
+        and _json_object(response).get("error") == "invalid_grant"
+    )
+
+
 def _failure_reason(response: httpx.Response) -> str:
     """The status and the OAuth error fields, which never hold a credential."""
     body = _json_object(response)
@@ -129,9 +161,31 @@ def _failure_reason(response: httpx.Response) -> str:
     return f"HTTP {response.status_code} {detail}".strip()
 
 
-def register_client(http: httpx.Client, issuer: str, redirect_uri: str) -> str:
+def _post_token_form(client: httpx.Client, form: dict) -> httpx.Response:
+    issuer = settings.require("SENTIENCE_AUTH_ISSUER")
     try:
-        response = http.post(
+        return client.post(endpoint(issuer, "token"), data=form)
+    except httpx.HTTPError as exc:
+        log.warning("Sentience token request failed: %s", type(exc).__name__)
+        raise TokenRequestFailed(type(exc).__name__) from exc
+
+
+def _tokens_from_response(response: httpx.Response, now: int) -> Tokens:
+    tokens = (
+        tokens_from_response(_json_object(response), now)
+        if response.is_success
+        else None
+    )
+    if tokens is None:
+        reason = _failure_reason(response)
+        log.warning("Sentience token request failed: %s", reason)
+        raise TokenRequestFailed(reason)
+    return tokens
+
+
+def register_client(client: httpx.Client, issuer: str, redirect_uri: str) -> str:
+    try:
+        response = client.post(
             endpoint(issuer, "register"), json=registration_body(redirect_uri)
         )
     except httpx.HTTPError as exc:
@@ -146,13 +200,13 @@ def register_client(http: httpx.Client, issuer: str, redirect_uri: str) -> str:
     return client_id
 
 
-def start_authorization(http: httpx.Client, now: int) -> str:
+def start_authorization(client: httpx.Client, now: int) -> str:
     """Register if no client is stored, store a pending authorization, and return the sign-in URL."""
     issuer = settings.require("SENTIENCE_AUTH_ISSUER")
     redirect_uri = callback_url(settings.require("PUBLIC_BASE_URL"))
     client_id = db.get_sentience_client_id()
     if client_id is None:
-        client_id = register_client(http, issuer, redirect_uri)
+        client_id = register_client(client, issuer, redirect_uri)
         db.save_sentience_client_id(client_id)
     code_verifier = new_code_verifier()
     state = secrets.token_urlsafe(32)
@@ -160,7 +214,9 @@ def start_authorization(http: httpx.Client, now: int) -> str:
     return authorize_url(issuer, client_id, redirect_uri, code_verifier, state)
 
 
-def complete_authorization(http: httpx.Client, state: str, code: str, now: int) -> bool:
+def complete_authorization(
+    client: httpx.Client, state: str, code: str, now: int
+) -> bool:
     """Exchange the code for tokens and store them.
 
     False, with no token request made, when the state is not a pending authorization.
@@ -170,25 +226,14 @@ def complete_authorization(http: httpx.Client, state: str, code: str, now: int) 
     client_id = db.get_sentience_client_id()
     if code_verifier is None or client_id is None:
         return False
-    issuer = settings.require("SENTIENCE_AUTH_ISSUER")
     redirect_uri = callback_url(settings.require("PUBLIC_BASE_URL"))
-    try:
-        response = http.post(
-            endpoint(issuer, "token"),
-            data=token_request_form(client_id, redirect_uri, code, code_verifier),
-        )
-    except httpx.HTTPError as exc:
-        log.warning("Sentience token request failed: %s", type(exc).__name__)
-        raise TokenRequestFailed(type(exc).__name__) from exc
-    tokens = (
-        tokens_from_response(_json_object(response), now)
-        if response.is_success
-        else None
+    tokens = _tokens_from_response(
+        _post_token_form(
+            client,
+            token_request_form(client_id, redirect_uri, code, code_verifier),
+        ),
+        now,
     )
-    if tokens is None:
-        reason = _failure_reason(response)
-        log.warning("Sentience token request failed: %s", reason)
-        raise TokenRequestFailed(reason)
     return db.store_sentience_tokens(
         state,
         client_id,
@@ -197,3 +242,59 @@ def complete_authorization(http: httpx.Client, state: str, code: str, now: int) 
         tokens.expires_at,
         now,
     )
+
+
+def _expire(client: httpx.Client, now: int) -> None:
+    """Mark access expired and send the alert once for this expiry."""
+    if db.mark_sentience_auth_expired(now):
+        alert.send_reauthorization_alert(
+            client, reauth_url(settings.require("PUBLIC_BASE_URL"))
+        )
+
+
+def _refresh(now: int) -> str:
+    """Renew the stored tokens and return the new access token.
+
+    Raises AuthExpired, after marking access expired, when Sentience refuses the refresh token,
+    and TokenRequestFailed, with nothing changed, for any other failure.
+    """
+    auth = db.get_sentience_auth()
+    if auth is None:
+        raise TokenRequestFailed("Sentience is not connected")
+    if auth.refresh_token is None:
+        raise TokenRequestFailed("Sentience gave no refresh token")
+    with http.client() as client:
+        response = _post_token_form(
+            client, refresh_request_form(auth.client_id, auth.refresh_token)
+        )
+        if is_invalid_grant(response):
+            log.warning("Sentience refused the refresh token")
+            _expire(client, now)
+            raise AuthExpired("Sentience refused the refresh token")
+    tokens = _tokens_from_response(response, now)
+    db.save_refreshed_tokens(
+        tokens.access_token, tokens.refresh_token, tokens.expires_at, now
+    )
+    return tokens.access_token
+
+
+def deliver(message: str) -> None:
+    """Dispatch one conflict message with a fresh access token, or raise OperatorError.
+
+    The token is renewed first when it has lapsed or is about to, and once more, with one
+    retry of the dispatch, when Sentience rejects it. While access is expired nothing is
+    refreshed and Sentience is not called.
+    """
+    if db.is_sentience_auth_expired():
+        raise AuthExpired("Sentience access has expired and must be reauthorized")
+    auth = db.get_sentience_auth()
+    if auth is None:
+        raise sentience_mcp.DispatchFailed("Sentience is not connected")
+    now = int(time.time())
+    access_token = auth.access_token
+    if needs_refresh(auth.expires_at, now):
+        access_token = _refresh(now)
+    try:
+        sentience_mcp.dispatch(access_token, message)
+    except sentience_mcp.AccessTokenRejected:
+        sentience_mcp.dispatch(_refresh(now), message)

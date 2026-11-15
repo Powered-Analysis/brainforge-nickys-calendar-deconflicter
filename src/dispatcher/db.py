@@ -45,6 +45,14 @@ SCHEMA = (
         client_id TEXT NOT NULL
     )
     """,
+    # A row here means Sentience has refused the refresh token. sentience_auth's columns are
+    # fixed by the PRD, so the mark has a table of its own.
+    """
+    CREATE TABLE IF NOT EXISTS sentience_auth_expired (
+        id TEXT PRIMARY KEY,
+        expired_at INTEGER NOT NULL
+    )
+    """,
     # An authorization the CLI started and the callback has not yet finished.
     """
     CREATE TABLE IF NOT EXISTS sentience_pending_authorization (
@@ -64,7 +72,14 @@ class Channel(NamedTuple):
     resource_id: str
 
 
-# The key of the single row in sentience_auth and in sentience_client.
+class StoredAuth(NamedTuple):
+    client_id: str
+    access_token: str
+    refresh_token: str | None
+    expires_at: int
+
+
+# The key of the single row in sentience_auth, sentience_auth_expired, and sentience_client.
 SENTIENCE_ID = "sentience"
 
 
@@ -157,12 +172,49 @@ def save_sync_token(calendar_id: str, sync_token: str | None) -> None:
         )
 
 
-def get_sentience_access_token() -> str | None:
+def get_sentience_auth() -> StoredAuth | None:
     with _connection() as conn:
         row = conn.execute(
-            "SELECT access_token FROM sentience_auth WHERE id = ?", (SENTIENCE_ID,)
+            "SELECT client_id, access_token, refresh_token, expires_at "
+            "FROM sentience_auth WHERE id = ?",
+            (SENTIENCE_ID,),
         ).fetchone()
-    return row[0] if row else None
+    return StoredAuth(*row) if row else None
+
+
+def save_refreshed_tokens(
+    access_token: str, refresh_token: str | None, expires_at: int, updated_at: int
+) -> None:
+    """Token Rotation Safety: one statement, so a new refresh token replaces the old one
+    together with the new access token or not at all. Without a new refresh token the old one
+    is kept."""
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE sentience_auth SET access_token = ?, "
+            "refresh_token = COALESCE(?, refresh_token), expires_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (access_token, refresh_token, expires_at, updated_at, SENTIENCE_ID),
+        )
+
+
+def is_sentience_auth_expired() -> bool:
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sentience_auth_expired WHERE id = ?", (SENTIENCE_ID,)
+        ).fetchone()
+    return row is not None
+
+
+def mark_sentience_auth_expired(expired_at: int) -> bool:
+    """False when auth was already marked expired, so only the call that marks it alerts."""
+    with _connection() as conn:
+        return (
+            conn.execute(
+                "INSERT OR IGNORE INTO sentience_auth_expired (id, expired_at) VALUES (?, ?)",
+                (SENTIENCE_ID, expired_at),
+            ).rowcount
+            == 1
+        )
 
 
 def is_conflict_processed(event_hash: str) -> bool:
@@ -255,7 +307,8 @@ def store_sentience_tokens(
     expires_at: int,
     updated_at: int,
 ) -> bool:
-    """Replace the stored tokens and consume the pending authorization, atomically.
+    """Replace the stored tokens, clear the expired mark, and consume the pending
+    authorization, atomically.
 
     False, with nothing written, when the authorization was already consumed: two callbacks
     for one state cannot both store tokens.
@@ -271,6 +324,9 @@ def store_sentience_tokens(
                 == 1
             )
             if consumed:
+                conn.execute(
+                    "DELETE FROM sentience_auth_expired WHERE id = ?", (SENTIENCE_ID,)
+                )
                 conn.execute(
                     "INSERT INTO sentience_auth "
                     "(id, client_id, access_token, refresh_token, expires_at, updated_at) "

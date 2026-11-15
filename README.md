@@ -22,7 +22,7 @@ bash scripts/suite.sh       # the full suite, one libSQL container per CPU (need
 uv run ruff format && uv run ruff check
 ```
 
-Tests replace the network by setting `dispatcher.http.transport` to an `httpx` transport for Sentience, and `dispatcher.google_calendar.transport` to an `httplib2.Http`-compatible object for Google. They replace the operator's browser by replacing `dispatcher.cli.open_url`.
+Tests replace the network by setting `dispatcher.http.transport` to an `httpx` transport for Sentience's auth server and Resend, and `dispatcher.google_calendar.transport` to an `httplib2.Http`-compatible object for Google. They replace the operator's browser by replacing `dispatcher.cli.open_url`.
 
 A local libSQL server that takes no token: `docker run -p 8080:8080 ghcr.io/tursodatabase/libsql-server:latest`, with `TURSO_DATABASE_URL=http://127.0.0.1:8080`.
 
@@ -79,6 +79,16 @@ The command registers the dispatcher with Sentience as an OAuth client, the firs
 
 The command exits nonzero, and opens no browser, if registration fails. The callback answers `400` when Sentience reports an error or the authorization is unknown or already used, and `502` when Sentience's token endpoint does not return tokens; the stored tokens are unchanged in both cases. The app's access log omits the callback's query string, so the authorization code is never logged.
 
+After a successful callback the app also processes the changes of every active calendar, one at a time, so conflicts that went undelivered while Sentience was disconnected are delivered.
+
+## Keeping Sentience access alive
+
+Before each delivery the app renews the stored access token with `grant_type=refresh_token` if it has lapsed or lapses within 60 seconds, using the lifetime Sentience states for it (a token stated with no lifetime is renewed before every use). A new refresh token replaces the old one in the same statement that stores the new access token; without one the old token is kept. If Sentience's MCP server answers `401`, the app renews once and retries the delivery once.
+
+When Sentience refuses the refresh token with `invalid_grant` (status `400` or `401`), the app marks access expired and emails `ALERT_TO` through Resend, once per expiry, from `Calendar Deconflicter <onboarding@resend.dev>`, with the subject `[Calendar Deconflicter] Alert — Sentience needs re-authorization` and a link to `<PUBLIC_BASE_URL>/oauth/sentience/reauth`. The email carries no event data. A failed send is logged and not retried. Any other refresh failure leaves the conflict undelivered and marks nothing expired.
+
+While access is expired the app neither refreshes nor calls Sentience, every conflict is undelivered (its notification answers `503`), and `POST /internal/renew-watches` renews every channel and then answers `503`. `GET /oauth/sentience/reauth` then redirects to a new Sentience sign-in; at any other time it starts nothing and answers `409`. A successful callback clears the expired mark. `auth sentience` reconnects at any time.
+
 ## Attach calendars (First-Time Setup, step 4)
 
 With the app deployed, run on your own machine:
@@ -101,7 +111,7 @@ For each calendar you own, the command reads its events once to record a startin
 
 Google's notification channels expire, so the workflow `.github/workflows/renew-watches.yml` calls `POST /internal/renew-watches` every 3 days. For each attached calendar, the endpoint opens a new channel at `<PUBLIC_BASE_URL>/webhooks/gcal`, stores it, and then closes the old one. The calendar's starting point is unchanged, and detached calendars are left alone.
 
-The endpoint answers `200` when every calendar was renewed, or when none is attached. It answers `502` when any calendar failed, after renewing the others, so the workflow's run fails. A calendar whose new channel could not be opened keeps its old one. An old channel that Google no longer knows (`404`) is not a failure; any other failed close is, and the new channel is still stored. The response body names no calendar, because the workflow's log is public. It answers `500` when a setting it needs is unset: `INTERNAL_CRON_SECRET`, the database, and, once a calendar is attached, `PUBLIC_BASE_URL` and the Google settings.
+The endpoint answers `200` when every calendar was renewed, or when none is attached. It answers `502` when any calendar failed, after renewing the others, so the workflow's run fails. While Sentience access is expired it answers `503` after renewing (see Keeping Sentience access alive). A calendar whose new channel could not be opened keeps its old one. An old channel that Google no longer knows (`404`) is not a failure; any other failed close is, and the new channel is still stored. The response body names no calendar, because the workflow's log is public. It answers `500` when a setting it needs is unset: `INTERNAL_CRON_SECRET`, the database, and, once a calendar is attached, `PUBLIC_BASE_URL` and the Google settings.
 
 ## Detach a calendar
 
@@ -127,6 +137,6 @@ For each changed timed event, the app reads the events on the same calendar that
 
 Each event is classified `internal` or `external_mixed`: external when its organizer or any attendee, other than a room or the operator's own calendar, has an email domain that isn't `GOOGLE_WORKSPACE_DOMAIN` (compared without regard to case; a subdomain is outside). Two external events call for the `irreconcilable` policy, one of each for `never_move_external`, and two internal ones for `full_evaluation`.
 
-Every overlapping pair is one conflict, delivered as one call of Sentience's `ask_sentience` tool over a Streamable HTTP session to `SENTIENCE_MCP_URL`, with the stored access token and a single `message` argument. The message is the fixed instruction, the policy's sentence, and a JSON payload of the two events, with times in the primary calendar's time zone, as the PRD's Conflict Message Contract defines. It carries no description, location, conference link, or attachment. A call that returns a result that isn't an error delivers the conflict, and the app then records the conflict's hash in `processed_events`; Sentience's reply is not read or kept. A conflict whose hash is recorded is not sent again, so a repeated notification, or a title change that leaves the classification as it was, dispatches nothing. A change to either event's time or classification does. If Sentience isn't connected or a call fails, that conflict isn't recorded and the notification is answered `503`; the conflicts delivered before it stay recorded.
+Every overlapping pair is one conflict, delivered as one call of Sentience's `ask_sentience` tool over a Streamable HTTP session to `SENTIENCE_MCP_URL`, with the stored access token and a single `message` argument. The message is the fixed instruction, the policy's sentence, and a JSON payload of the two events, with times in the primary calendar's time zone, as the PRD's Conflict Message Contract defines. It carries no description, location, conference link, or attachment. A call that returns a result that isn't an error delivers the conflict, and the app then records the conflict's hash in `processed_events`; Sentience's reply is not read or kept. A conflict whose hash is recorded is not sent again, so a repeated notification, or a title change that leaves the classification as it was, dispatches nothing. A change to either event's time or classification does. If Sentience isn't connected, its access is expired, or a call fails, that conflict isn't recorded and the notification is answered `503`; the conflicts delivered before it stay recorded.
 
 Notifications are processed one at a time across the app, so each waits for the one before it.
