@@ -10,6 +10,7 @@ import hashlib
 import json
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -81,6 +82,17 @@ class OverlapGoogle(DeltaGoogle):
                 if "dateTime" in stored.get("start", {}):
                     begins = datetime.fromisoformat(stored["start"]["dateTime"])
                     ends = datetime.fromisoformat(stored["end"]["dateTime"])
+                    if not (ends > low and begins < high):
+                        continue
+                else:
+                    # An all-day event is whole days of the primary zone (`end.date` excluded).
+                    zone = ZoneInfo("America/New_York")
+                    begins = datetime.fromisoformat(stored["start"]["date"]).replace(
+                        tzinfo=zone
+                    )
+                    ends = datetime.fromisoformat(stored["end"]["date"]).replace(
+                        tzinfo=zone
+                    )
                     if not (ends > low and begins < high):
                         continue
                 items.append(stored)
@@ -231,7 +243,7 @@ def test_a_changed_event_overlapping_another_is_dispatched_and_the_cursor_moves(
     assert token_of(WORK) == NEXT_TOKEN
 
 
-def test_the_overlap_is_read_from_the_same_calendar_with_a_bounded_window_and_no_expansion(
+def test_the_overlap_is_read_from_every_active_calendar_with_a_bounded_window_and_no_expansion(
     client, google, calendars, mcp
 ):
     world(
@@ -241,8 +253,8 @@ def test_the_overlap_is_read_from_the_same_calendar_with_a_bounded_window_and_no
     )
     notify(client)
     assert google.window_reads
+    assert {read["path"].split("/")[4] for read in google.window_reads} == {WORK, HOME}
     for read in google.window_reads:
-        assert read["path"].split("/")[4] == WORK
         assert "singleEvents" not in read["query"]
         assert datetime.fromisoformat(
             read["query"]["timeMin"]
@@ -294,9 +306,13 @@ def test_the_full_read_after_a_410_is_evaluated_too(client, google, calendars, m
         {"status": "cancelled"},
         {"transparency": "transparent"},
         {"recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]},
-        {"start": {"date": f"{FUTURE}"}, "end": {"date": "2099-03-03"}},
+        {
+            "start": {"date": f"{FUTURE}"},
+            "end": {"date": "2099-03-03"},
+            "transparency": "transparent",
+        },
     ],
-    ids=["cancelled", "transparent", "series", "all-day"],
+    ids=["cancelled", "transparent", "series", "all-day-transparent"],
 )
 def test_an_excluded_event_raises_no_conflict_whether_it_changed_or_was_overlapped(
     client, google, calendars, mcp, fields
@@ -879,3 +895,294 @@ def test_one_dispatch_failure_does_not_block_another_calendars_notification(
     google.script[(HOME, "home-token-0")] = Read([[]], "home-token-1")
     assert notify(client, HOME_CHANNEL).status_code == 200
     assert token_of(HOME) == "home-token-1"
+
+
+# --- Issue #7: all-day busy events and cross-calendar conflicts ----------------------------
+
+
+def all_day(event_id, first_day, end_day, **fields):
+    return {
+        "kind": "calendar#event",
+        "id": event_id,
+        "iCalUID": f"{event_id}@google.com",
+        "status": "confirmed",
+        "summary": f"Fictional {event_id}",
+        "start": {"date": first_day},
+        "end": {"date": end_day},
+        **INSIDE,
+        **fields,
+    }
+
+
+def test_an_all_day_busy_event_conflicts_with_a_meeting_in_its_days_and_is_all_day_in_the_payload(
+    client, google, calendars, mcp
+):
+    world(
+        google,
+        [all_day("away", FUTURE, "2099-03-03")],
+        [meeting("call", "10:00", "11:00")],
+    )
+    assert notify(client).status_code == 200
+    (payload,) = mcp.payloads
+    assert payload["incoming"]["all_day"] is True
+    assert payload["incoming"]["start"] == f"{FUTURE}T00:00:00-05:00"
+    assert payload["incoming"]["end"] == "2099-03-03T00:00:00-05:00"
+    assert payload["existing"]["all_day"] is False
+    assert payload["existing"]["event_id"] == "call"
+    assert token_of(WORK) == NEXT_TOKEN
+
+
+def test_a_meeting_changed_inside_an_all_day_event_conflicts_with_it(
+    client, google, calendars, mcp
+):
+    world(
+        google,
+        [meeting("call", "10:00", "11:00")],
+        [all_day("away", FUTURE, "2099-03-03")],
+    )
+    notify(client)
+    (payload,) = mcp.payloads
+    assert payload["incoming"]["event_id"] == "call"
+    assert payload["existing"]["all_day"] is True
+    assert payload["existing"]["start"] == f"{FUTURE}T00:00:00-05:00"
+    assert payload["existing"]["end"] == "2099-03-03T00:00:00-05:00"
+
+
+def test_two_all_day_events_conflict_and_an_unset_or_opaque_transparency_both_count(
+    client, google, calendars, mcp
+):
+    world(
+        google,
+        [all_day("away", FUTURE, "2099-03-04", transparency="opaque")],
+        [all_day("travel", "2099-03-03", "2099-03-05")],
+    )
+    notify(client)
+    (payload,) = mcp.payloads
+    assert payload["overlap"] == {
+        "start": "2099-03-03T00:00:00-05:00",
+        "end": "2099-03-04T00:00:00-05:00",
+    }
+
+
+def test_the_second_day_of_a_multi_day_event_is_covered_and_its_end_day_is_not(
+    client, google, calendars, mcp
+):
+    away = all_day("away", FUTURE, "2099-03-04")
+    world(
+        google,
+        [away],
+        [
+            meeting("second-day", "10:00", "11:00", day="2099-03-03"),
+            meeting("end-day", "10:00", "11:00", day="2099-03-04"),
+        ],
+    )
+    notify(client)
+    assert [p["existing"]["event_id"] for p in mcp.payloads] == ["second-day"]
+
+
+def test_an_all_day_event_with_free_transparency_raises_no_conflict_from_either_side(
+    client, google, calendars, mcp
+):
+    free = all_day("free", FUTURE, "2099-03-03", transparency="transparent")
+    call = meeting("call", "10:00", "11:00")
+    world(google, [free], [call])
+    assert notify(client).status_code == 200
+    world(google, [call], [free], token=NEXT_TOKEN, next_token="work-token-2")
+    assert notify(client).status_code == 200
+    assert mcp.calls == []
+
+
+def test_the_all_day_interval_is_the_primary_calendars_zone(
+    client, google, calendars, mcp
+):
+    google.stored[WORK] = []
+    google.add(
+        {
+            "id": WORK,
+            "summary": "Fictional Work",
+            "accessRole": "owner",
+            "timeZone": "America/Los_Angeles",
+        },
+        alias="primary",
+    )
+    world(
+        google,
+        [all_day("away", FUTURE, "2099-03-03")],
+        [meeting("call", "10:00", "11:00", offset="-08:00")],
+    )
+    notify(client)
+    (payload,) = mcp.payloads
+    assert payload["incoming"]["start"] == f"{FUTURE}T00:00:00-08:00"
+    assert payload["incoming"]["end"] == "2099-03-03T00:00:00-08:00"
+
+
+def test_an_all_day_conflict_is_recorded_once_with_the_incoming_calendar(
+    client, google, calendars, mcp
+):
+    world(
+        google,
+        [all_day("away", FUTURE, "2099-03-03")],
+        [meeting("call", "10:00", "11:00")],
+    )
+    notify(client)
+    expected = prd_hash(
+        (WORK, "away", utc(FUTURE, "05:00"), utc("2099-03-03", "05:00"), "internal"),
+        (WORK, "call", utc(FUTURE, "15:00"), utc(FUTURE, "16:00"), "internal"),
+    )
+    assert {h: c for h, (c, _) in processed().items()} == {expected: WORK}
+
+
+# Cross-calendar conflicts
+
+
+def test_a_meeting_clashing_with_one_on_another_active_calendar_is_a_cross_calendar_conflict(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    google.stored[HOME] = [meeting("elsewhere", "10:30", "11:30")]
+    assert notify(client).status_code == 200
+    (payload,) = mcp.payloads
+    assert payload["cross_calendar"] is True
+    assert payload["policy"] == "full_evaluation"
+    assert payload["incoming"]["calendar_id"] == WORK
+    assert payload["existing"]["calendar_id"] == HOME
+    assert payload["incoming"]["event_id"] == "changed"
+    assert payload["existing"]["event_id"] == "elsewhere"
+
+
+def test_both_events_of_a_cross_calendar_conflict_are_internal_whoever_is_invited(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00", **OUTSIDE)])
+    google.stored[HOME] = [meeting("elsewhere", "10:30", "11:30", **OUTSIDE)]
+    notify(client)
+    (payload,) = mcp.payloads
+    assert payload["incoming"]["classification"] == "internal"
+    assert payload["existing"]["classification"] == "internal"
+    assert payload["policy"] == "full_evaluation"
+
+
+def test_an_all_day_event_on_another_calendar_conflicts_with_the_changed_meeting(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    google.stored[HOME] = [all_day("travel", FUTURE, "2099-03-03")]
+    notify(client)
+    (payload,) = mcp.payloads
+    assert payload["cross_calendar"] is True
+    assert payload["existing"]["all_day"] is True
+    assert payload["existing"]["calendar_id"] == HOME
+
+
+def test_every_active_calendar_is_read_and_a_detached_one_is_not(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    google.stored[SIDE] = [meeting("side", "10:30", "11:30")]
+    notify(client)
+    assert {r["path"].split("/")[4] for r in google.window_reads} == {WORK, HOME}
+    assert mcp.calls == []
+
+
+def test_the_window_read_of_each_calendar_covers_the_incoming_events_interval(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    notify(client)
+    for read in google.window_reads:
+        assert datetime.fromisoformat(
+            read["query"]["timeMin"]
+        ) <= datetime.fromisoformat(f"{FUTURE}T10:00:00-05:00")
+        assert datetime.fromisoformat(
+            read["query"]["timeMax"]
+        ) >= datetime.fromisoformat(f"{FUTURE}T11:00:00-05:00")
+
+
+def test_the_same_meeting_on_two_calendars_never_conflicts_with_itself(
+    client, google, calendars, mcp
+):
+    shared = {"iCalUID": "shared@google.com"}
+    world(google, [meeting("on-work", "10:00", "11:00", **shared)])
+    google.stored[HOME] = [meeting("on-home", "10:00", "11:00", **shared)]
+    assert notify(client).status_code == 200
+    assert mcp.calls == []
+    assert token_of(WORK) == NEXT_TOKEN
+
+
+def test_a_cross_calendar_conflict_is_dispatched_once_when_both_calendars_notify(
+    client, google, calendars, mcp
+):
+    first = meeting("on-work", "10:00", "11:00")
+    second = meeting("on-home", "10:30", "11:30")
+    world(google, [first])
+    google.stored[HOME] = [second]
+    google.script[(HOME, "home-token-0")] = Read([[second]], "home-token-1")
+    assert notify(client).status_code == 200
+    assert notify(client, HOME_CHANNEL).status_code == 200
+    assert len(mcp.calls) == 1
+    assert token_of(HOME) == "home-token-1"
+    expected = prd_hash(
+        (WORK, "on-work", utc(FUTURE, "15:00"), utc(FUTURE, "16:00"), "internal"),
+        (HOME, "on-home", utc(FUTURE, "15:30"), utc(FUTURE, "16:30"), "internal"),
+    )
+    assert {h: c for h, (c, _) in processed().items()} == {expected: WORK}
+
+
+def test_the_hash_is_the_same_whichever_calendar_found_the_conflict_first(
+    client, google, calendars, mcp
+):
+    first = meeting("on-work", "10:00", "11:00")
+    second = meeting("on-home", "10:30", "11:30")
+    google.stored[WORK] = [first]
+    google.stored[HOME] = [second]
+    google.script[(HOME, "home-token-0")] = Read([[second]], "home-token-1")
+    assert notify(client, HOME_CHANNEL).status_code == 200
+    (found,) = processed()
+    # The calendar recorded is the one whose delta found it.
+    assert processed()[found][0] == HOME
+    assert found == prd_hash(
+        (WORK, "on-work", utc(FUTURE, "15:00"), utc(FUTURE, "16:00"), "internal"),
+        (HOME, "on-home", utc(FUTURE, "15:30"), utc(FUTURE, "16:30"), "internal"),
+    )
+
+
+def test_a_delta_with_no_overlap_on_any_calendar_dispatches_nothing(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    google.stored[HOME] = [meeting("later", "11:00", "12:00")]
+    assert notify(client).status_code == 200
+    assert mcp.calls == []
+
+
+def test_no_event_data_is_stored_in_the_database(client, google, calendars, mcp):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    google.stored[HOME] = [meeting("elsewhere", "10:30", "11:30")]
+    notify(client)
+    assert mcp.calls
+    stored = " ".join(
+        str(cell)
+        for (table,) in execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        for row in execute(f'SELECT * FROM "{table}"')
+        for cell in row
+    )
+    for leaked in ("Fictional changed", "Fictional elsewhere", "pat@example.org"):
+        assert leaked not in stored
+
+
+def test_a_failed_delivery_of_a_cross_calendar_conflict_leaves_the_cursor_and_the_retry_sends_it(
+    client, google, calendars, mcp
+):
+    world(google, [meeting("changed", "10:00", "11:00")])
+    google.stored[HOME] = [meeting("elsewhere", "10:30", "11:30")]
+    mcp.fail_on = {0}
+    assert notify(client).status_code == 503
+    assert token_of(WORK) == START_TOKEN
+    assert processed() == {}
+    google.script[(WORK, START_TOKEN)] = Read(
+        [[meeting("changed", "10:00", "11:00")]], NEXT_TOKEN
+    )
+    assert notify(client).status_code == 200
+    assert len(mcp.calls) == 2
+    assert len(processed()) == 1
+    assert token_of(WORK) == NEXT_TOKEN

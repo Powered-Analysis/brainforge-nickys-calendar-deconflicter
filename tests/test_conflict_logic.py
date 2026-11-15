@@ -75,7 +75,7 @@ def existing_event():
 
 
 def meeting(raw, calendar_id="operator@example.com"):
-    result = conflicts.meeting_from_event(calendar_id, raw, DOMAIN)
+    result = conflicts.meeting_from_event(calendar_id, raw, DOMAIN, lambda: ZONE)
     assert result is not None
     return result
 
@@ -189,13 +189,20 @@ def test_policy_follows_the_two_classifications(first, second, policy):
         {"status": "cancelled"},
         {"transparency": "transparent"},
         {"recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]},
-        {"start": {"date": "2026-03-02"}, "end": {"date": "2026-03-03"}},
+        {
+            "start": {"date": "2026-03-02"},
+            "end": {"date": "2026-03-03"},
+            "transparency": "transparent",
+        },
     ],
-    ids=["cancelled", "transparent", "series", "all-day"],
+    ids=["cancelled", "transparent", "series", "all-day-transparent"],
 )
 def test_an_excluded_event_is_not_a_meeting(fields):
     raw = {**existing_event(), **fields}
-    assert conflicts.meeting_from_event("operator@example.com", raw, DOMAIN) is None
+    assert (
+        conflicts.meeting_from_event("operator@example.com", raw, DOMAIN, lambda: ZONE)
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -212,7 +219,10 @@ def test_an_excluded_event_is_not_a_meeting(fields):
 )
 def test_an_ordinary_event_is_a_meeting(fields):
     raw = {**existing_event(), **fields}
-    assert conflicts.meeting_from_event("operator@example.com", raw, DOMAIN) is not None
+    assert (
+        conflicts.meeting_from_event("operator@example.com", raw, DOMAIN, lambda: ZONE)
+        is not None
+    )
 
 
 # --- Overlap (criteria 2, 3, 4, 7) ---------------------------------------------------------
@@ -609,6 +619,280 @@ def test_the_two_meetings_are_ordered_by_calendar_id_then_event_id():
     found = conflicts.find_conflicts(first, [second], NOW)[0]
     expected = (
         "a-calendar@example.com|7hd02mzexample|2026-03-02T14:30:00Z|2026-03-02T15:30:00Z||internal|"
-        "b-calendar@example.com|4kq1t8f0example|2026-03-02T15:00:00Z|2026-03-02T16:00:00Z||external_mixed"
+        "b-calendar@example.com|4kq1t8f0example|2026-03-02T15:00:00Z|2026-03-02T16:00:00Z||internal"
     )
+    assert conflicts.event_hash(found) == hashlib.sha256(expected.encode()).hexdigest()
+
+
+# --- Issue #7: all-day events and cross-calendar conflicts ---------------------------------
+
+LA = "America/Los_Angeles"
+HOME_CALENDAR = "home@example.com"
+
+
+def all_day(event_id, first_day, end_day, **fields):
+    """An all-day event: `end.date` is the day after its last day."""
+    return {
+        "id": event_id,
+        "iCalUID": f"{event_id}@google.com",
+        "status": "confirmed",
+        "start": {"date": first_day},
+        "end": {"date": end_day},
+        "summary": f"Fictional {event_id}",
+        **fields,
+    }
+
+
+def all_day_meeting(raw, zone=ZONE, calendar_id="operator@example.com"):
+    result = conflicts.meeting_from_event(calendar_id, raw, DOMAIN, lambda: zone)
+    assert result is not None
+    return result
+
+
+def local(event_id, start, end, **fields):
+    """A timed event on 2026-03-02 in the primary zone's offset."""
+    return event(
+        event_id,
+        f"2026-03-02T{start}:00-05:00",
+        f"2026-03-02T{end}:00-05:00",
+        **fields,
+    )
+
+
+def stamps(meeting_):
+    return meeting_.start.isoformat(), meeting_.end.isoformat()
+
+
+@pytest.mark.parametrize(
+    ("first_day", "end_day", "start", "end"),
+    [
+        (
+            "2026-03-02",
+            "2026-03-03",
+            "2026-03-02T00:00:00-05:00",
+            "2026-03-03T00:00:00-05:00",
+        ),
+        (
+            # Daylight saving time begins: the day is 23 hours long.
+            "2026-03-08",
+            "2026-03-09",
+            "2026-03-08T00:00:00-05:00",
+            "2026-03-09T00:00:00-04:00",
+        ),
+        (
+            # A multi-day event spans every day in the range, `end.date` excluded.
+            "2026-03-02",
+            "2026-03-05",
+            "2026-03-02T00:00:00-05:00",
+            "2026-03-05T00:00:00-05:00",
+        ),
+    ],
+    ids=["one-day", "dst-start", "multi-day"],
+)
+def test_an_all_day_event_is_midnight_to_midnight_in_the_primary_zone(
+    first_day, end_day, start, end
+):
+    found = all_day_meeting(all_day("away", first_day, end_day))
+    assert stamps(found) == (start, end)
+    assert found.all_day is True
+
+
+@pytest.mark.parametrize(
+    "fields", [{}, {"transparency": "opaque"}], ids=["unset", "opaque"]
+)
+def test_an_opaque_or_unset_all_day_event_is_a_meeting(fields):
+    assert all_day_meeting(all_day("away", "2026-03-02", "2026-03-03", **fields))
+
+
+def test_a_transparent_all_day_event_is_not_a_meeting():
+    raw = all_day("free", "2026-03-02", "2026-03-03", transparency="transparent")
+    assert (
+        conflicts.meeting_from_event("x@example.com", raw, DOMAIN, lambda: ZONE) is None
+    )
+
+
+def test_the_all_day_interval_uses_the_zone_given_not_the_events_or_a_fixed_one():
+    raw = all_day("away", "2026-03-02", "2026-03-03")
+    assert stamps(all_day_meeting(raw, LA)) == (
+        "2026-03-02T00:00:00-08:00",
+        "2026-03-03T00:00:00-08:00",
+    )
+
+
+def test_a_timed_event_does_not_depend_on_the_primary_zone():
+    # The zone is only a way to ask; a timed event never needs it.
+    def no_zone():
+        raise AssertionError("asked for the zone for a timed event")
+
+    assert conflicts.meeting_from_event(
+        "x@example.com", existing_event(), DOMAIN, no_zone
+    )
+
+
+def test_an_all_day_event_conflicts_with_a_timed_meeting_either_way_round():
+    away = all_day("away", "2026-03-02", "2026-03-03")
+    timed_ = local("call", "10:00", "11:00")
+    for first, second in ((away, timed_), (timed_, away)):
+        found = conflicts.find_conflicts(
+            all_day_meeting(first), [all_day_meeting(second)], NOW
+        )
+        assert len(found) == 1
+        assert found[0].overlap_start.isoformat() == "2026-03-02T10:00:00-05:00"
+        assert found[0].overlap_end.isoformat() == "2026-03-02T11:00:00-05:00"
+
+
+def test_two_all_day_events_conflict_over_the_days_they_share():
+    first = all_day_meeting(all_day("a", "2026-03-02", "2026-03-05"))
+    second = all_day_meeting(all_day("b", "2026-03-04", "2026-03-07"))
+    found = conflicts.find_conflicts(first, [second], NOW)
+    assert len(found) == 1
+    assert found[0].overlap_start.isoformat() == "2026-03-04T00:00:00-05:00"
+    assert found[0].overlap_end.isoformat() == "2026-03-05T00:00:00-05:00"
+
+
+def test_consecutive_all_day_events_do_not_conflict():
+    first = all_day_meeting(all_day("a", "2026-03-02", "2026-03-03"))
+    second = all_day_meeting(all_day("b", "2026-03-03", "2026-03-04"))
+    assert conflicts.find_conflicts(first, [second], NOW) == []
+
+
+def test_a_meeting_at_midnight_ending_the_all_day_event_does_not_conflict():
+    away = all_day_meeting(all_day("away", "2026-03-02", "2026-03-03"))
+    # The end is excluded: a meeting starting at 00:00 on `end.date` is outside it.
+    after = conflicts.meeting_from_event(
+        "operator@example.com",
+        event("late", "2026-03-03T00:00:00-05:00", "2026-03-03T01:00:00-05:00"),
+        DOMAIN,
+        lambda: ZONE,
+    )
+    assert conflicts.find_conflicts(away, [after], NOW) == []
+
+
+def test_an_all_day_conflict_whose_days_are_over_is_not_raised():
+    away = all_day_meeting(all_day("away", "2026-02-20", "2026-02-21"))
+    other = all_day_meeting(all_day("b", "2026-02-20", "2026-02-21"))
+    assert conflicts.find_conflicts(away, [other], NOW) == []
+
+
+def test_an_all_day_meetings_payload_entry_is_all_day_with_the_interval_as_start_and_end():
+    away = all_day_meeting(all_day("away", "2026-03-08", "2026-03-09"))
+    other = meeting(
+        event("call", "2026-03-08T10:00:00-04:00", "2026-03-08T11:00:00-04:00")
+    )
+    found = conflicts.find_conflicts(away, [other], NOW)[0]
+    payload = payload_of(conflicts.message(found, ZONE))
+    assert payload["incoming"]["all_day"] is True
+    assert payload["incoming"]["start"] == "2026-03-08T00:00:00-05:00"
+    assert payload["incoming"]["end"] == "2026-03-09T00:00:00-04:00"
+    assert payload["existing"]["all_day"] is False
+
+
+def test_an_all_day_conflicts_hash_uses_the_intervals_instants():
+    away = all_day_meeting(all_day("away", "2026-03-02", "2026-03-03"))
+    other = meeting(local("call", "10:00", "11:00"))
+    found = conflicts.find_conflicts(away, [other], NOW)[0]
+    first, second = sorted(
+        [
+            (
+                "operator@example.com",
+                "away",
+                "2026-03-02T05:00:00Z",
+                "2026-03-03T05:00:00Z",
+            ),
+            (
+                "operator@example.com",
+                "call",
+                "2026-03-02T15:00:00Z",
+                "2026-03-02T16:00:00Z",
+            ),
+        ]
+    )
+    expected = "|".join([*first, "", "internal", *second, "", "internal"])
+    assert conflicts.event_hash(found) == hashlib.sha256(expected.encode()).hexdigest()
+
+
+# Cross-Calendar Collision Detection and the Message Contract's policy table.
+
+
+def on_home(raw):
+    return meeting(raw, HOME_CALENDAR)
+
+
+def test_a_conflict_across_two_calendars_is_cross_calendar_internal_and_full_evaluation():
+    outside = {
+        "organizer": person("pat@example.org"),
+        "attendees": [person("operator@example.com"), person("pat@example.org")],
+    }
+    here = meeting(local("a", "10:00", "11:00", **outside))
+    there = on_home(local("b", "10:30", "11:30", **outside))
+    found = conflicts.find_conflicts(here, [there], NOW)
+    assert len(found) == 1
+    assert found[0].incoming.classification == "internal"
+    assert found[0].existing.classification == "internal"
+    assert found[0].policy == "full_evaluation"
+    payload = payload_of(conflicts.message(found[0], ZONE))
+    assert payload["cross_calendar"] is True
+    assert payload["policy"] == "full_evaluation"
+    assert payload["incoming"]["classification"] == "internal"
+    assert payload["existing"]["classification"] == "internal"
+    assert payload["incoming"]["calendar_id"] == "operator@example.com"
+    assert payload["existing"]["calendar_id"] == HOME_CALENDAR
+
+
+def test_a_conflict_on_one_calendar_keeps_its_classifications_and_is_not_cross_calendar():
+    found = conflict_of(incoming_event(), existing_event())
+    assert found.policy == "never_move_external"
+    assert payload_of(conflicts.message(found, ZONE))["cross_calendar"] is False
+
+
+def test_an_all_day_event_on_another_calendar_conflicts_and_is_internal():
+    away = all_day_meeting(
+        all_day("away", "2026-03-02", "2026-03-03"), calendar_id=HOME_CALENDAR
+    )
+    call = meeting(incoming_event())
+    found = conflicts.find_conflicts(call, [away], NOW)
+    assert len(found) == 1
+    assert {found[0].incoming.classification, found[0].existing.classification} == {
+        "internal"
+    }
+    assert payload_of(conflicts.message(found[0], ZONE))["cross_calendar"] is True
+
+
+def test_the_same_meeting_on_two_calendars_never_conflicts_with_itself():
+    raw = local("shared", "10:00", "11:00", iCalUID="shared-uid@google.com")
+    assert conflicts.find_conflicts(meeting(raw), [on_home(raw)], NOW) == []
+
+
+def test_the_same_all_day_event_on_two_calendars_never_conflicts_with_itself():
+    raw = all_day("away", "2026-03-02", "2026-03-03", iCalUID="shared-uid@google.com")
+    here = all_day_meeting(raw)
+    there = all_day_meeting(raw, calendar_id=HOME_CALENDAR)
+    assert conflicts.find_conflicts(here, [there], NOW) == []
+
+
+def test_a_cross_calendar_conflict_has_the_same_hash_whichever_side_was_incoming():
+    one = meeting(local("a", "10:00", "11:00"))
+    two = on_home(local("b", "10:30", "11:30"))
+    from_one = conflicts.find_conflicts(one, [two], NOW)[0]
+    from_two = conflicts.find_conflicts(two, [one], NOW)[0]
+    assert conflicts.event_hash(from_one) == conflicts.event_hash(from_two)
+
+
+def test_the_hash_of_a_cross_calendar_conflict_carries_both_events_as_internal():
+    outside = {"organizer": person("pat@example.org")}
+    one = meeting(local("a", "10:00", "11:00", **outside))
+    two = on_home(local("b", "10:30", "11:30"))
+    found = conflicts.find_conflicts(one, [two], NOW)[0]
+    first, second = sorted(
+        [
+            (
+                "operator@example.com",
+                "a",
+                "2026-03-02T15:00:00Z",
+                "2026-03-02T16:00:00Z",
+            ),
+            (HOME_CALENDAR, "b", "2026-03-02T15:30:00Z", "2026-03-02T16:30:00Z"),
+        ]
+    )
+    expected = "|".join([*first, "", "internal", *second, "", "internal"])
     assert conflicts.event_hash(found) == hashlib.sha256(expected.encode()).hexdigest()
