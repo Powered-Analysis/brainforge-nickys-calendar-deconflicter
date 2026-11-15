@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse
 
-from dispatcher import db, http, sentience_auth, settings
+from dispatcher import attach, db, http, ingress, sentience_auth, settings
+from dispatcher.errors import OperatorError
 
 
 @asynccontextmanager
@@ -66,6 +67,22 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
             headers={"WWW-Authenticate": "Bearer"},
         )
     return Response(status_code=204)
+
+
+@app.post(attach.WEBHOOK_PATH)
+def gcal_webhook(x_goog_channel_id: str | None = Header(default=None)) -> Response:
+    if not x_goog_channel_id:
+        raise HTTPException(status_code=400, detail="X-Goog-Channel-ID is missing")
+    try:
+        known = ingress.process_notification(x_goog_channel_id)
+    except OperatorError as error:
+        # A 503 makes Google retry the notification.
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    if not known:
+        raise HTTPException(
+            status_code=404, detail="No active calendar has this channel"
+        )
+    return Response(status_code=200)
 
 
 def _page(message: str, status_code: int) -> HTMLResponse:
