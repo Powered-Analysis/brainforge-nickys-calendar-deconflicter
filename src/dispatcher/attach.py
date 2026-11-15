@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from dispatcher import db
-from dispatcher.errors import OperatorError
 from dispatcher.google_calendar import GoogleCalendar, GoogleRequestFailed
 
 WEBHOOK_PATH = "/webhooks/gcal"
@@ -76,12 +75,15 @@ def stop_unrecorded_channel(
 def _attach_entry(
     google: GoogleCalendar, entry: dict, address: str, now: int
 ) -> Outcome:
-    """Attach one `CalendarList` entry. Raises OperatorError when a Google call fails.
+    """Attach one `CalendarList` entry.
 
-    A database error is that calendar's `failed` outcome, for one calendar and for all alike.
+    A Google or database failure is that calendar's `failed` outcome, for one calendar and
+    for all alike.
     """
     try:
         return _attach_calendar(google, entry, address, now)
+    except GoogleRequestFailed as error:
+        return Outcome(entry["id"], "failed", str(error))
     except db.Error as error:
         return Outcome(entry["id"], "failed", f"the database failed: {error}")
 
@@ -124,8 +126,5 @@ def attach_all(google: GoogleCalendar, address: str, now: int) -> list[Outcome]:
     for entry in google.list_calendars():
         if not is_owned(entry):
             continue
-        try:
-            outcomes.append(_attach_entry(google, entry, address, now))
-        except OperatorError as error:
-            outcomes.append(Outcome(entry["id"], "failed", str(error)))
+        outcomes.append(_attach_entry(google, entry, address, now))
     return outcomes
