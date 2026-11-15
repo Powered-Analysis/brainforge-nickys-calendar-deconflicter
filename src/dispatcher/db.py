@@ -293,6 +293,16 @@ def delete_expired_pending_authorizations(created_before: int) -> None:
         )
 
 
+def keep_newest_pending_authorizations(count: int) -> None:
+    with _connection() as conn:
+        conn.execute(
+            "DELETE FROM sentience_pending_authorization WHERE state NOT IN ("
+            "SELECT state FROM sentience_pending_authorization "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+            (count,),
+        )
+
+
 def get_pending_code_verifier(state: str) -> str | None:
     with _connection() as conn:
         row = conn.execute(
