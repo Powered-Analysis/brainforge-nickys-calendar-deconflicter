@@ -1,0 +1,53 @@
+# The owner's settings for the agent team (docs/agentic_coding_team.md).
+# The workflows and scripts read every value here on each run, from main.
+#
+# Not here, because GitHub Actions reads them from the workflow files
+# themselves: each job's time limit, in .github/workflows/tick.yml and
+# report.yml.
+
+# Model IDs are written in full, never an alias, and effort is always set, so a
+# provider's default can't silently retune a role.
+# effort: low | medium | high | xhigh | max
+# max_turns is a loose backstop; the job's time limit is the real runaway guard.
+roles:
+  pm:
+    model: claude-opus-5-5
+    effort: medium
+    # The one planning run; every later review is graded against its issues.
+    planning_effort: high
+    max_turns: 200
+  fse:
+    model: claude-sonnet-5-5
+    effort: high
+    max_turns: 200
+  sa:
+    model: claude-opus-5-5
+    effort: medium
+    max_turns: 200
+  sdet:
+    model: claude-sonnet-5-5
+    effort: high
+    max_turns: 200
+  reporter:
+    model: claude-sonnet-5-5
+    effort: medium
+    max_turns: 60
+
+orchestration:
+  # Rounds of requested changes on one PR before it goes to the owner.
+  revision_cap: 4
+  # Minutes a tick that found no work, or failed, waits before starting the
+  # next one. Must stay under the finish job's time limit in tick.yml.
+  idle_wait_minutes: 10
+
+report:
+  # The fixed sender of every report and alert; the mail filter matches it.
+  from: Calendar Deconflicter <onboarding@resend.dev>
+  # A progress report goes out after this many merged feature PRs.
+  every_merged_prs: 3
+  # Blocked: this many completed ticks in a row failed.
+  blocked_after_failed_ticks: 3
+  # Stalled: ticks succeed, but no feature PR has merged for this long.
+  stalled_after_hours: 3
+  # While an alert's condition holds, the alert repeats this often.
+  alert_repeat_hours: 4
