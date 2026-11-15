@@ -102,7 +102,7 @@ def _attach_entry(
     except GoogleRequestFailed as error:
         return Outcome(entry["id"], "failed", str(error))
     except db.Error as error:
-        return Outcome(entry["id"], "failed", f"the database failed: {error}")
+        return Outcome(entry["id"], "failed", db.failure_message(error))
 
 
 def _attach_calendar(
