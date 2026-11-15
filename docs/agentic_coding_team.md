@@ -223,7 +223,7 @@ The first infrastructure issue proves that `turso-serverless` connects to the co
 
 1. **The logic that decides is I/O-free.** It takes everything it needs as arguments, the current time included, and touches neither the network nor the database. That covers:
    - turning an all-day event into an interval, and the transparency check;
-   - overlap detection, within one calendar and across calendars;
+   - overlap detection, within one calendar, across calendars, and between the occurrences of recurring series;
    - attendee-domain classification, and the conflict class and policy tags that follow from it;
    - building the conflict payload, and the hash that de-duplicates events;
    - the PKCE verifier and challenge;
@@ -232,7 +232,7 @@ The first infrastructure issue proves that `turso-serverless` connects to the co
 
 | Outside world | Replaced at |
 |---|---|
-| Google Calendar API (`CalendarList`, `events.list`, `events.watch`, `channels.stop`) | the one module that calls Google, through an injected HTTP transport |
+| Google Calendar API (`CalendarList`, `events.list`, `events.instances`, `events.watch`, `channels.stop`) | the one module that calls Google, through an injected HTTP transport |
 | Sentience's auth server (registration, token exchange, refresh) | an injected `httpx` transport |
 | Resend (the re-authorization alert) | an injected `httpx` transport |
 | The Sentience MCP session | the one function that opens a session and dispatches a payload, the app's only call into an MCP client |

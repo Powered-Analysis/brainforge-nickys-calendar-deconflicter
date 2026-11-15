@@ -40,6 +40,7 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 * As a Multi-Calendar Operator, I want to attach any calendar I own to the monitoring service with a single command, so that I do not have to touch Dockerfiles, Fly.io configs, or environment variables when my calendar footprint expands.
 * As a Multi-Calendar Operator, I want all-day events marked "Busy" (`transparency: "opaque"`) to generate conflicts against overlapping meetings, so that out-of-office days and travel blocks are fully protected.
 * As a Multi-Calendar Operator, I want cross-calendar collisions between my own calendars treated as Internal-vs-Internal conflicts, so that my personal and secondary commitments are balanced against my primary work schedule.
+* As a Multi-Calendar Operator, I want a recurring meeting treated as one commitment, so that two series that collide every week raise one conflict instead of one a week.
 * As a Multi-Calendar Operator, I want all conflicts surfaced to me through Sentience, ensuring it never recommends moving an External/Mixed meeting over an Internal meeting.
 * As a Multi-Calendar Operator, I want collisions between two External or Mixed meetings surfaced as "Irreconcilable Conflicts," so that I can immediately decide which commitment to decline or adjust manually.
 * As a Multi-Calendar Operator, I want to establish high-inertia guidelines and tune lookahead horizons directly within my stateful Sentience agent, so that scheduling judgment compounds inside the agent rather than in application code.
@@ -65,6 +66,12 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 * **SyncToken Delta Processing (P0):** On webhook notification, query `Calendar.Events.list` for the target calendar using its persisted `syncToken`, isolating created or updated events without historical scanning.
 * **All-Day "Busy" Event Evaluation (P0):** Evaluate all-day events (defined by `start.date` and `end.date`) as full-day conflicting intervals (`[00:00:00, 23:59:59]` in the user's primary timezone) whenever `transparency` is `"opaque"` (or unset, which defaults to opaque). Only events explicitly set to `transparency: "transparent"` (Free) are excluded.
 * **Cross-Calendar Collision Detection (P0):** When an incoming event on Calendar A overlaps with an existing event on Calendar B (where both calendars are owned and monitored by the user), the system flags the collision and tags both events as **Internal**.
+* **Recurring Series as One Commitment (P0):** A recurring series is one event, however many occurrences it has. Two series that collide every week therefore produce one conflict, not one a week.
+  * *Reading:* Deltas are read without expanding series (`singleEvents` is not set). Google then returns a series as one event carrying `recurrence`, and returns an occurrence that was moved or edited on its own as a separate event carrying `recurringEventId`. That separate event is an ordinary event in its own right and no longer counts as an occurrence of the series. Neither does a cancelled occurrence.
+  * *Overlap:* A series overlaps another event when any of its occurrences does, and overlaps another series when any occurrence of one overlaps any occurrence of the other. Occurrences are read from Google with `events.instances`, never computed from the recurrence rule.
+  * *Look-ahead:* Against a single event, the occurrences examined are those within that event's interval. Against another series, they are the occurrences of both from the moment the delta is processed until 90 days later. 90 days is a first cut, to be revisited once real calendars show how far ahead two series first collide. *Accepted gap:* two series whose first collision lies beyond that window raise no conflict until either one changes.
+  * *Classification:* A series is classified by the attendees of the series event.
+  * *The conflict* describes the earliest colliding occurrence (Conflict Message Contract) and is de-duplicated by the series' schedule, not by that occurrence's date (Conflict De-duplication). It is dispatched once, and again only when a series' schedule or classification changes. *Accepted cost:* the operator gets one notice per colliding pair. Resolving one occurrence by hand leaves the series colliding, and its later occurrences are not raised again.
 * **Attendee Domain Classification (P0):** For single-calendar events, classify each overlapping event deterministically:
 * **Internal:** 100% of attendee email domains match the user's primary Google Workspace domain.
 * **External / Mixed:** One or more attendees have email domains outside the user's Google Workspace domain.
@@ -93,7 +100,7 @@ A zero-DevOps, reactive scheduling pipeline that intercepts overlapping Google C
 
 
 * **Remote MCP Session Dispatch (P0):** Initialize an MCP client connection to `https://mcp.sentience.com/mcp` using Streamable HTTP, authenticating requests with `Authorization: Bearer <access_token>`. Dispatch the structured conflict payload.
-* **Dispatch Tool Call (P0):** A conflict is one pair of overlapping events, so an event that overlaps several others produces one conflict per pair. Each conflict is dispatched as one `tools/call` of Sentience's `ask_sentience` tool with a single argument, `message`, holding the text defined under Conflict Message Contract. `thread_id` is never sent, so every conflict opens its own Sentience chat. The dispatcher calls no other Sentience tool: it never calls `read_thread`, and it stores no thread id.
+* **Dispatch Tool Call (P0):** A conflict is one pair of overlapping events, so an event that overlaps several others produces one conflict per pair. A recurring series counts as one event (Recurring Series as One Commitment). Each conflict is dispatched as one `tools/call` of Sentience's `ask_sentience` tool with a single argument, `message`, holding the text defined under Conflict Message Contract. `thread_id` is never sent, so every conflict opens its own Sentience chat. The dispatcher calls no other Sentience tool: it never calls `read_thread`, and it stores no thread id.
 * **Delivery (P0):** A conflict is delivered when the tool call returns a result that is not an error. Sentience's reply and its "still pending" note both count, and the dispatcher reads neither: what Sentience decides is never parsed, stored, or acted on. A conflict's `processed_events` entry is written only once the conflict is delivered. When the call fails (a transport error, an authorization failure that a token refresh does not cure, or an error result), the conflict is not recorded, the calendar's `syncToken` is not advanced, and the webhook answers `503`. Google retries a `503`, and any later notification for that calendar re-reads the same delta, so an undelivered conflict is dispatched again and a delivered one is not.
 * **Re-Authorization Alert (P0):** When a token refresh fails with `invalid_grant`, the dispatcher marks Sentience auth as expired and emails the operator, because Sentience is the one channel that is then closed.
   * *The email* is sent through Resend's API with the key `RESEND_API_KEY`, to the address `ALERT_TO`, from `Calendar Deconflicter <onboarding@resend.dev>`, with the subject `[Calendar Deconflicter] Alert — Sentience needs re-authorization`. The sender and the subject prefix are those of the build team's reports, so the operator's existing mail filter catches it. The body is one sentence saying that conflicts are not being delivered, and the re-auth link `<PUBLIC_BASE_URL>/oauth/sentience/reauth`. It carries no event data.
@@ -244,6 +251,7 @@ Automated message from the calendar conflict dispatcher. Two of the operator's c
     "start": "2026-03-02T10:00:00-05:00",
     "end": "2026-03-02T11:00:00-05:00",
     "all_day": false,
+    "recurring": false,
     "classification": "external_mixed",
     "organizer": "pat@example.org",
     "attendees": ["operator@example.com", "pat@example.org"]
@@ -255,6 +263,7 @@ Automated message from the calendar conflict dispatcher. Two of the operator's c
     "start": "2026-03-02T09:30:00-05:00",
     "end": "2026-03-02T10:30:00-05:00",
     "all_day": false,
+    "recurring": false,
     "classification": "internal",
     "organizer": "operator@example.com",
     "attendees": ["operator@example.com", "sam@example.com"]
@@ -265,6 +274,7 @@ Automated message from the calendar conflict dispatcher. Two of the operator's c
   * `incoming` is the created or updated event the delta returned, and `existing` is the event it overlaps.
   * `classification` is `internal` (displayed as Internal) or `external_mixed` (displayed as External / Mixed). In a cross-calendar conflict both events are `internal`, and `cross_calendar` is `true`.
   * `start`, `end`, and both ends of `overlap` are RFC 3339 timestamps carrying the UTC offset of the user's primary calendar timezone. For an all-day event `all_day` is `true`, and `start` and `end` are the interval All-Day Event Arithmetic gives it.
+  * `recurring` is `true` for a recurring series. Its `event_id` is then the id of the series, and its `start` and `end` are those of its earliest colliding occurrence, as is `overlap`.
   * `summary` is the event's title, or `""` when Google returns none. `organizer` is the organizer's email address, or `null` when Google returns none. `attendees` holds every attendee's email address in the order Google returns them, and is `[]` for an event without attendees.
   * Nothing else about an event is sent: no description, location, conference link, or attachment. An invitation's text is written by whoever sent it, so the dispatcher passes Sentience the identifiers it needs to look the event up, and no free text beyond the title.
 * **Database Schema (Turso):**
@@ -297,11 +307,17 @@ CREATE TABLE processed_events (
 ```
 
 
-* **Conflict De-duplication (`event_hash`):** `event_hash` identifies one conflict in the state it was dispatched in. It is the lowercase hex SHA-256 of a UTF-8 string built from five fields of each of the conflict's two events: `calendar_id`, `event_id`, `start`, `end`, and `classification`. The values are those of the Conflict Message Contract, except that `start` and `end` are written in UTC as `YYYY-MM-DDTHH:MM:SSZ`. The two events are taken in ascending order of (`calendar_id`, `event_id`), and all ten fields are joined with `|`.
+* **Conflict De-duplication (`event_hash`):** `event_hash` identifies one conflict in the state it was dispatched in. It is the lowercase hex SHA-256 of a UTF-8 string built from six fields of each of the conflict's two events: `calendar_id`, `event_id`, `start`, `end`, `recurrence`, and `classification`.
+  * `calendar_id`, `event_id`, and `classification` are those of the Conflict Message Contract.
+  * `start` and `end` are written in UTC as `YYYY-MM-DDTHH:MM:SSZ`. For a recurring series they are the series event's own `start` and `end`, which are those of its first occurrence, and not the colliding occurrence's.
+  * `recurrence` is the series event's `recurrence` lines in the order Google returns them, joined with a single space. It is empty for an event that does not recur.
+  * The two events are taken in ascending order of (`calendar_id`, `event_id`), and all twelve fields are joined with `|`.
   * The same two events with unchanged times and classifications give the same hash, so a repeated notification, a replayed delta, and the full sync after a `410` dispatch nothing twice. The order makes the hash the same whichever event was the incoming one.
-  * A change to either event's time or classification gives a new hash, so the changed conflict is dispatched again. A change to a title or to attendees that leaves the classification as it was does not.
+  * A change to either event's time, recurrence rule, or classification gives a new hash, so the changed conflict is dispatched again. A change to a title or to attendees that leaves the classification as it was does not.
+  * The date of a series' colliding occurrence is not in the hash, so the passing of time never dispatches a series conflict again.
   * The row's `calendar_id` is the incoming event's calendar, and `processed_at` is when the conflict was delivered.
-  * For the example payload of the Conflict Message Contract, the string is `operator@example.com|4kq1t8f0example|2026-03-02T15:00:00Z|2026-03-02T16:00:00Z|external_mixed|operator@example.com|7hd02mzexample|2026-03-02T14:30:00Z|2026-03-02T15:30:00Z|internal` and the hash is `927281338afebdb824a43ed675f08c7497832f15cb54a6f7b4dd770b2d8e5fad`.
+  * For the example payload of the Conflict Message Contract, the string is `operator@example.com|4kq1t8f0example|2026-03-02T15:00:00Z|2026-03-02T16:00:00Z||external_mixed|operator@example.com|7hd02mzexample|2026-03-02T14:30:00Z|2026-03-02T15:30:00Z||internal` and the hash is `fe51fe1ff6c549b16f83b3c01c01ca3652734fb3dfc27cf34edb6bf25fbc143d`.
+  * Had "Team sync" been a weekly series that began on 2026-01-05 with the rule `RRULE:FREQ=WEEKLY;BYDAY=MO`, the string would be `operator@example.com|4kq1t8f0example|2026-03-02T15:00:00Z|2026-03-02T16:00:00Z||external_mixed|operator@example.com|7hd02mzexample|2026-01-05T14:30:00Z|2026-01-05T15:30:00Z|RRULE:FREQ=WEEKLY;BYDAY=MO|internal` and the hash `32118fb0b34f3641bfbd1dde3cddd11f183d0318b3749c662d02f9d342228852`.
 * **Dual OAuth Model:**
 * *Google Workspace:* Standard Desktop Client OAuth (offline refresh token in Fly secrets). No public Google redirect URIs required.
 * *Sentience MCP:* RFC 7591 Dynamic Client Registration and RFC 7636 Authorization Code with PKCE. Uses public redirect URI `GET /oauth/sentience/callback` on Fly.io.
@@ -324,7 +340,7 @@ CREATE TABLE processed_events (
 
 
 * **Google Calendar API v3 (`calendar-json.googleapis.com`):**
-* *Role:* Manage `events.watch` subscriptions, query `CalendarList` for discovery, and fetch deltas via `syncToken`.
+* *Role:* Manage `events.watch` subscriptions, query `CalendarList` for discovery, fetch deltas via `syncToken`, and read a recurring series' occurrences via `events.instances`.
 * *Library:* `google-api-python-client` / `httpx`.
 
 
