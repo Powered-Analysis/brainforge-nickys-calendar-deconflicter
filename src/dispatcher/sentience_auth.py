@@ -17,6 +17,8 @@ CALLBACK_PATH = "/oauth/sentience/callback"
 REAUTH_PATH = "/oauth/sentience/reauth"
 # Token Rotation & Refresh Management: a token is renewed this long before it lapses.
 REFRESH_MARGIN_SECONDS = 60
+# How long an operator has to finish signing in before the pending authorization is discarded.
+PENDING_AUTHORIZATION_LIFETIME_SECONDS = 600
 CLIENT_NAME = "Calendar Deconflicter"
 SCOPE = "sentience"
 
@@ -65,6 +67,11 @@ def reauth_url(public_base_url: str) -> str:
 
 def needs_refresh(expires_at: int, now: int) -> bool:
     return expires_at <= now + REFRESH_MARGIN_SECONDS
+
+
+def pending_authorization_cutoff(now: int) -> int:
+    """Pending authorizations created before this moment have expired."""
+    return now - PENDING_AUTHORIZATION_LIFETIME_SECONDS
 
 
 def refresh_request_form(client_id: str, refresh_token: str) -> dict:
@@ -208,6 +215,8 @@ def start_authorization(client: httpx2.Client, now: int) -> str:
     if client_id is None:
         client_id = register_client(client, issuer, redirect_uri)
         db.save_sentience_client_id(client_id)
+    # Abandoned runs would otherwise keep a usable verifier and state forever.
+    db.delete_expired_pending_authorizations(pending_authorization_cutoff(now))
     code_verifier = new_code_verifier()
     state = secrets.token_urlsafe(32)
     db.save_pending_authorization(state, code_verifier, now)
@@ -219,9 +228,12 @@ def complete_authorization(
 ) -> bool:
     """Exchange the code for tokens and store them.
 
-    False, with no token request made, when the state is not a pending authorization.
+    False, with no token request made, when the state is not a pending authorization or its
+    lifetime has passed.
     Raises TokenRequestFailed, with nothing stored, when Sentience does not return tokens.
     """
+    # Deleting first makes an expired state indistinguishable from an unknown one.
+    db.delete_expired_pending_authorizations(pending_authorization_cutoff(now))
     code_verifier = db.get_pending_code_verifier(state)
     client_id = db.get_sentience_client_id()
     if code_verifier is None or client_id is None:
