@@ -14,7 +14,11 @@ def _renew(google: GoogleCalendar, channel: db.Channel, address: str) -> None:
     resource_id, expiration = attach.watch_record(
         google.watch(channel.calendar_id, attach.watch_body(new_channel_id, address))
     )
-    db.replace_channel(channel.calendar_id, new_channel_id, resource_id, expiration)
+    try:
+        db.replace_channel(channel.calendar_id, new_channel_id, resource_id, expiration)
+    except Exception as save_error:
+        attach.stop_unrecorded_channel(google, new_channel_id, resource_id, save_error)
+        raise
     google.stop_channel(channel.channel_id, channel.resource_id)
 
 
