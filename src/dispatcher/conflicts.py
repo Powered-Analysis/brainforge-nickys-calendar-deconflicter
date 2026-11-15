@@ -195,6 +195,11 @@ def meeting_from_event(
     )
 
 
+def has_ended(end: datetime, now: datetime) -> bool:
+    """Whether a time span ending at `end` is over, so no conflict is raised for it."""
+    return end <= now
+
+
 def find_conflicts(
     incoming: Meeting, others: list[Meeting], now: datetime
 ) -> list[Conflict]:
@@ -218,7 +223,7 @@ def find_conflicts(
             for mine in _intervals(incoming)
             for theirs in _intervals(other)
             if max(mine[0], theirs[0]) < min(mine[1], theirs[1])
-            and min(mine[1], theirs[1]) > now
+            and not has_ended(min(mine[1], theirs[1]), now)
         ]
         if not collisions:
             continue
