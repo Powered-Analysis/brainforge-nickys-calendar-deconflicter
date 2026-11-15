@@ -290,6 +290,14 @@ def save_pending_authorization(state: str, code_verifier: str, created_at: int) 
         )
 
 
+def delete_expired_pending_authorizations(created_before: int) -> None:
+    with _connection() as conn:
+        conn.execute(
+            "DELETE FROM sentience_pending_authorization WHERE created_at < ?",
+            (created_before,),
+        )
+
+
 def get_pending_code_verifier(state: str) -> str | None:
     with _connection() as conn:
         row = conn.execute(
