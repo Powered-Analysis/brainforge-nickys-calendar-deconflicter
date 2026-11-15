@@ -110,3 +110,15 @@ uv run python -m dispatcher calendar detach <calendar_id>
 ```
 
 The command closes the calendar's Google channel and marks the calendar inactive. The row stays, and `calendar attach` can attach it again. If Google no longer knows the channel (`404`), the calendar is still marked inactive. A calendar that is not attached, or is already detached, is reported and Google is not called. If Google fails to close the channel, the calendar stays attached and the command exits nonzero, so you can run it again. The command writes nothing to Google except closing the channel.
+
+## Change notifications
+
+`POST /webhooks/gcal` is the address every attached calendar's Google channel notifies. The `X-Goog-Channel-ID` header says which calendar changed, and the app reads that calendar's changes with `events.list` from the stored `sync_token`, every page, then stores the new `sync_token`. It never writes to Google.
+
+- `200`: the changes were read.
+- `400`: the request has no `X-Goog-Channel-ID`.
+- `404`: no active calendar has that channel, so nothing is read. A detached calendar's old channel is one of these.
+- `503`, with the stored `sync_token` unchanged: Google or the connection to it failed, so Google retries the notification.
+- When Google answers `410` because it no longer honors the `sync_token`, the app clears it, reads every event to get a fresh one, stores it, and answers `200`. If that read fails, the `sync_token` stays cleared and the next notification for the calendar does the full read.
+
+Notifications are processed one at a time across the app, so each waits for the one before it.

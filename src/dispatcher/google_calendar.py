@@ -30,6 +30,10 @@ class GoogleRequestFailed(OperatorError):
     """Google, or the connection to it, did not complete a request."""
 
 
+class SyncTokenExpired(GoogleRequestFailed):
+    """Google answered 410: it no longer honors the calendar's `syncToken`."""
+
+
 @contextmanager
 def _execute_errors() -> Iterator[None]:
     try:
@@ -86,31 +90,50 @@ class GoogleCalendar:
             if not page_token:
                 return entries
 
-    def read_sync_token(self, calendar_id: str) -> str:
-        """Read every event, so Google issues the `syncToken` that marks this moment.
+    def read_events(
+        self, calendar_id: str, sync_token: str | None = None
+    ) -> tuple[list[dict], str]:
+        """Every page of `events.list`, and the `syncToken` Google issues for this moment.
+
+        With a `sync_token` the events are only what changed since it; without one, every
+        event. Raises SyncTokenExpired when Google answers 410 to a `sync_token`.
 
         Recurring Series as One Commitment, Reading: `singleEvents` stays unset, so a series
         is one event.
         """
+        events: list[dict] = []
         page_token = None
         while True:
             with _execute_errors():
-                page = (
-                    self._api.events()
-                    .list(
-                        calendarId=calendar_id,
-                        maxResults=PAGE_SIZE,
-                        pageToken=page_token,
+                try:
+                    page = (
+                        self._api.events()
+                        .list(
+                            calendarId=calendar_id,
+                            maxResults=PAGE_SIZE,
+                            pageToken=page_token,
+                            syncToken=sync_token,
+                        )
+                        .execute()
                     )
-                    .execute()
-                )
+                except HttpError as exc:
+                    if sync_token and exc.resp.status == 410:
+                        raise SyncTokenExpired(
+                            "Google no longer honors the calendar's syncToken"
+                        ) from exc
+                    raise
+            events.extend(page.get("items", []))
             page_token = page.get("nextPageToken")
             if not page_token:
                 break
-        sync_token = page.get("nextSyncToken")
-        if not sync_token:
+        next_sync_token = page.get("nextSyncToken")
+        if not next_sync_token:
             raise GoogleRequestFailed("Google returned no syncToken for the calendar")
-        return sync_token
+        return events, next_sync_token
+
+    def read_sync_token(self, calendar_id: str) -> str:
+        """The `syncToken` that marks this moment, from a read of every event."""
+        return self.read_events(calendar_id)[1]
 
     def watch(self, calendar_id: str, body: dict) -> dict:
         """Open a notification channel. This is one of the app's two writes to Google."""

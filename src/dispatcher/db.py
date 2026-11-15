@@ -138,6 +138,25 @@ def deactivate_calendar(calendar_id: str) -> None:
         )
 
 
+def get_active_calendar_by_channel(channel_id: str) -> tuple[str, str | None] | None:
+    """The calendar ID and `syncToken` of the active calendar that owns this channel."""
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT calendar_id, sync_token FROM calendars "
+            "WHERE channel_id = ? AND active = 1",
+            (channel_id,),
+        ).fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def save_sync_token(calendar_id: str, sync_token: str | None) -> None:
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE calendars SET sync_token = ? WHERE calendar_id = ?",
+            (sync_token, calendar_id),
+        )
+
+
 def save_attached_calendar(
     calendar_id: str,
     channel_id: str,
