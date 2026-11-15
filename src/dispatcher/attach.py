@@ -57,7 +57,7 @@ def _attach_entry(
     calendar_id = entry["id"]
     if not is_owned(entry):
         return Outcome(calendar_id, "refused", "you do not own it")
-    if db.is_calendar_active(calendar_id):
+    if db.get_active_channel(calendar_id) is not None:
         return Outcome(calendar_id, "skipped", "already attached")
     sync_token = google.read_sync_token(calendar_id)
     channel_id = str(uuid.uuid4())
