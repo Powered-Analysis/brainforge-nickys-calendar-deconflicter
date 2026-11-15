@@ -1,6 +1,5 @@
 """The one module that calls Google. Every Calendar API request the app makes goes through it."""
 
-import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -25,8 +24,6 @@ PAGE_SIZE = 250
 # Tests set this to an `httplib2.Http`-compatible object to replace the network; the app
 # leaves it unset. It also serves the token refresh, so a test can answer that request too.
 transport: Any = None
-
-log = logging.getLogger(__name__)
 
 
 class GoogleRequestFailed(OperatorError):

@@ -54,7 +54,7 @@ def auth_sentience() -> None:
     open_url(url)
 
 
-def _is_one_target(args: argparse.Namespace) -> bool:
+def _has_valid_target(args: argparse.Namespace) -> bool:
     if args.auto_discover:
         return args.calendar_id in (None, attach.ALL_CALENDARS)
     return args.calendar_id is not None
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command is None:
         parser.print_help()
         return
-    if args.command == "calendar" and not _is_one_target(args):
+    if args.command == "calendar" and not _has_valid_target(args):
         parser.error("calendar attach takes a calendar ID, `all`, or --auto-discover")
     try:
         if args.command == "auth":

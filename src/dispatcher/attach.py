@@ -19,9 +19,6 @@ class Outcome:
     detail: str = ""
 
 
-# The functions up to `attach_all` decide without touching the network or the database.
-
-
 def webhook_address(public_base_url: str) -> str:
     return f"{public_base_url.rstrip('/')}{WEBHOOK_PATH}"
 
@@ -48,6 +45,9 @@ def watch_record(response: dict) -> tuple[str, int]:
         return resource_id, int(expiration)
     except TypeError, ValueError:
         raise GoogleRequestFailed("Google's watch response had no expiration") from None
+
+
+# The functions up to here decide without touching the network or the database.
 
 
 def _attach_entry(
