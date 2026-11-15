@@ -34,6 +34,11 @@ def renew_all(
     for channel in channels:
         try:
             _renew(google, channel, address)
+        except attach.ChannelLeftOpen as error:
+            # The save error's text is left out for the same reason.
+            failures.append(
+                f"saving a renewed channel failed, and {error.stop_summary()}"
+            )
         except OperatorError as error:
             failures.append(str(error))
         except db.Error:

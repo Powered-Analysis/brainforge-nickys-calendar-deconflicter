@@ -22,6 +22,26 @@ def webhook_address(public_base_url: str) -> str:
     return f"{public_base_url.rstrip('/')}{WEBHOOK_PATH}"
 
 
+class ChannelLeftOpen(GoogleRequestFailed):
+    """Saving a new channel failed, and so did stopping it.
+
+    Carries the stop's own message apart from the save error's text, which can name a calendar.
+    """
+
+    def __init__(self, channel_id: str, stop_error: Exception, save_error: Exception):
+        self.channel_id = channel_id
+        self.stop_error = stop_error
+        super().__init__(
+            f"saving the calendar failed ({save_error}), and {self.stop_summary()}"
+        )
+
+    def stop_summary(self) -> str:
+        return (
+            f"channel {self.channel_id} could not be stopped, so Google may still send "
+            f"notifications for it: {self.stop_error}"
+        )
+
+
 def watch_body(channel_id: str, address: str) -> dict:
     return {"id": channel_id, "type": "web_hook", "address": address}
 
@@ -57,7 +77,7 @@ def stop_unrecorded_channel(
 ) -> None:
     """Stop a new channel whose row could not be saved.
 
-    Raises GoogleRequestFailed naming both failures when the stop fails too. The caller
+    Raises ChannelLeftOpen naming both failures when the stop fails too. The caller
     re-raises the save error when this returns.
     """
     # Without a row, renewal and detach could never find the channel, and Google would keep
@@ -66,10 +86,7 @@ def stop_unrecorded_channel(
         google.stop_channel(channel_id, resource_id)
     except GoogleRequestFailed as stop_error:
         # Naming both failures keeps the operator from reading this as a Google-only error.
-        raise GoogleRequestFailed(
-            f"saving the calendar failed ({save_error}), and channel {channel_id} could "
-            f"not be stopped, so Google may still send notifications for it: {stop_error}"
-        ) from stop_error
+        raise ChannelLeftOpen(channel_id, stop_error, save_error) from stop_error
 
 
 def _attach_entry(
