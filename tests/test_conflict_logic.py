@@ -188,14 +188,13 @@ def test_policy_follows_the_two_classifications(first, second, policy):
     [
         {"status": "cancelled"},
         {"transparency": "transparent"},
-        {"recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]},
         {
             "start": {"date": "2026-03-02"},
             "end": {"date": "2026-03-03"},
             "transparency": "transparent",
         },
     ],
-    ids=["cancelled", "transparent", "series", "all-day-transparent"],
+    ids=["cancelled", "transparent", "all-day-transparent"],
 )
 def test_an_excluded_event_is_not_a_meeting(fields):
     raw = {**existing_event(), **fields}

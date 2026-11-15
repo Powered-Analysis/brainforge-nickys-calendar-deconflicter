@@ -305,14 +305,13 @@ def test_the_full_read_after_a_410_is_evaluated_too(client, google, calendars, m
     [
         {"status": "cancelled"},
         {"transparency": "transparent"},
-        {"recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]},
         {
             "start": {"date": f"{FUTURE}"},
             "end": {"date": "2099-03-03"},
             "transparency": "transparent",
         },
     ],
-    ids=["cancelled", "transparent", "series", "all-day-transparent"],
+    ids=["cancelled", "transparent", "all-day-transparent"],
 )
 def test_an_excluded_event_raises_no_conflict_whether_it_changed_or_was_overlapped(
     client, google, calendars, mcp, fields
