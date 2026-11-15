@@ -105,24 +105,29 @@ def _moment(when: dict) -> datetime:
     return moment
 
 
-def meeting_from_event(
-    calendar_id: str, event: dict, workspace_domain: str
-) -> Meeting | None:
-    """The event as a meeting that can conflict, or None when it can't.
+def is_evaluable(event: dict) -> bool:
+    """Whether the event can conflict at all.
 
     A cancelled event, a transparent one (All-Day "Busy" Event Evaluation: only `transparent`
     is excluded), a recurring series, and an all-day event are not evaluated here.
     """
-    start = event.get("start", {})
-    end = event.get("end", {})
-    if (
+    return not (
         event.get("status") == "cancelled"
         or event.get("transparency") == "transparent"
         or event.get("recurrence")
-        or "dateTime" not in start
-        or "dateTime" not in end
-    ):
+        or "dateTime" not in event.get("start", {})
+        or "dateTime" not in event.get("end", {})
+    )
+
+
+def meeting_from_event(
+    calendar_id: str, event: dict, workspace_domain: str
+) -> Meeting | None:
+    """The event as a meeting that can conflict, or None when it can't."""
+    if not is_evaluable(event):
         return None
+    start = event["start"]
+    end = event["end"]
     return Meeting(
         calendar_id=calendar_id,
         event_id=event["id"],

@@ -22,6 +22,8 @@ def _deliver_conflicts(
     Each delivered conflict is recorded at once, so a failure partway leaves the earlier ones
     recorded and the retry dispatches only the rest.
     """
+    # The domain is needed only to classify an event that has passed the exclusions.
+    events = [event for event in events if conflicts.is_evaluable(event)]
     if not events:
         return
     now = datetime.now(UTC)
