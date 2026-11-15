@@ -6,8 +6,9 @@ zone and domain arrive as arguments.
 
 import hashlib
 import json
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 INTERNAL = "internal"
@@ -49,6 +50,7 @@ class Meeting:
     summary: str
     start: datetime
     end: datetime
+    all_day: bool
     classification: str
     organizer: str | None
     attendees: tuple[str, ...]
@@ -105,36 +107,54 @@ def _moment(when: dict) -> datetime:
     return moment
 
 
+def _midnight(day: str, zone: ZoneInfo) -> datetime:
+    return datetime.combine(date.fromisoformat(day), time.min, tzinfo=zone)
+
+
 def is_evaluable(event: dict) -> bool:
     """Whether the event can conflict at all.
 
     A cancelled event, a transparent one (All-Day "Busy" Event Evaluation: only `transparent`
-    is excluded), a recurring series, and an all-day event are not evaluated here.
+    is excluded), and a recurring series are not evaluated here.
     """
     return not (
         event.get("status") == "cancelled"
         or event.get("transparency") == "transparent"
         or event.get("recurrence")
-        or "dateTime" not in event.get("start", {})
-        or "dateTime" not in event.get("end", {})
+        or not any(key in event.get("start", {}) for key in ("dateTime", "date"))
+        or not any(key in event.get("end", {}) for key in ("dateTime", "date"))
     )
 
 
 def meeting_from_event(
-    calendar_id: str, event: dict, workspace_domain: str
+    calendar_id: str,
+    event: dict,
+    workspace_domain: str,
+    primary_time_zone: Callable[[], str],
 ) -> Meeting | None:
-    """The event as a meeting that can conflict, or None when it can't."""
+    """The event as a meeting that can conflict, or None when it can't.
+
+    `primary_time_zone` is called only for an all-day event, which is the interval between
+    two midnights of that zone (All-Day Event Arithmetic: `end.date` is exclusive).
+    """
     if not is_evaluable(event):
         return None
-    start = event["start"]
-    end = event["end"]
+    all_day = "date" in event["start"]
+    if all_day:
+        zone = ZoneInfo(primary_time_zone())
+        start = _midnight(event["start"]["date"], zone)
+        end = _midnight(event["end"]["date"], zone)
+    else:
+        start = _moment(event["start"])
+        end = _moment(event["end"])
     return Meeting(
         calendar_id=calendar_id,
         event_id=event["id"],
         ical_uid=event.get("iCalUID"),
         summary=event.get("summary", ""),
-        start=_moment(start),
-        end=_moment(end),
+        start=start,
+        end=end,
+        all_day=all_day,
         classification=classify(event, workspace_domain),
         organizer=event.get("organizer", {}).get("email"),
         attendees=tuple(a["email"] for a in event.get("attendees", [])),
@@ -149,18 +169,24 @@ def find_conflicts(
 
     Times are half-open, `[start, end)`, so meetings that only touch don't overlap. A conflict
     whose overlap has already ended is not raised, and a meeting never conflicts with itself
-    or with another copy of its invitation.
+    or with another copy of its invitation. Meetings on two calendars are both Internal,
+    whoever is invited (Cross-Calendar Collision Detection).
     """
     conflicts = []
     for other in others:
-        if other.event_id == incoming.event_id or (
+        same_calendar = other.calendar_id == incoming.calendar_id
+        if (same_calendar and other.event_id == incoming.event_id) or (
             incoming.ical_uid and other.ical_uid == incoming.ical_uid
         ):
             continue
         overlap_start = max(incoming.start, other.start)
         overlap_end = min(incoming.end, other.end)
         if overlap_start < overlap_end and overlap_end > now:
-            conflicts.append(Conflict(incoming, other, overlap_start, overlap_end))
+            first, second = incoming, other
+            if not same_calendar:
+                first = replace(incoming, classification=INTERNAL)
+                second = replace(other, classification=INTERNAL)
+            conflicts.append(Conflict(first, second, overlap_start, overlap_end))
     return conflicts
 
 
@@ -202,7 +228,7 @@ def _meeting_payload(meeting: Meeting, zone: ZoneInfo) -> dict:
         "summary": meeting.summary,
         "start": _rfc3339(meeting.start, zone),
         "end": _rfc3339(meeting.end, zone),
-        "all_day": False,
+        "all_day": meeting.all_day,
         "recurring": False,
         "classification": meeting.classification,
         "organizer": meeting.organizer,
