@@ -9,7 +9,7 @@ database is the libSQL container; the failing save stands in for an unreachable 
 import pytest
 
 from dispatcher import attach, db, google_calendar
-from dispatcher.google_calendar import GoogleCalendar, GoogleRequestFailed
+from dispatcher.google_calendar import GoogleCalendar
 from test_calendar_attach import (  # noqa: F401 (fixtures)
     EXPIRATION_MS,
     HOME,
@@ -104,19 +104,6 @@ def test_a_stop_that_finds_the_channel_already_gone_still_raises_the_save_error(
         attach_entry(google)
 
 
-def test_a_failed_stop_raises_google_request_failed_with_the_save_error_in_its_chain(
-    google, failing_save
-):
-    google.stop_failures = _fail_every_stop(google, 500)
-    with pytest.raises(GoogleRequestFailed) as caught:
-        attach_entry(google)
-    chain, error = [], caught.value
-    while error is not None:
-        chain.append(error)
-        error = error.__context__
-    assert any(isinstance(link, DatabaseDown) for link in chain)
-
-
 def test_a_successful_save_stops_nothing(google):
     attach_entry(google)
     assert google.stops == []
@@ -125,8 +112,7 @@ def test_a_successful_save_stops_nothing(google):
 
 def test_a_failed_watch_stops_nothing_because_no_channel_exists(google, failing_save):
     google.watch_failures[WORK] = 500
-    with pytest.raises(GoogleRequestFailed):
-        attach_entry(google)
+    assert attach_entry(google).result == "failed"
     assert google.stops == []
     assert failing_save == []
 
@@ -176,9 +162,9 @@ def _fail_every_stop(google, status):
 
 def _failed_detail(google, status=500):
     google.stop_failures = _fail_every_stop(google, status)
-    with pytest.raises(GoogleRequestFailed) as caught:
-        attach_entry(google)
-    return str(caught.value)
+    outcome = attach_entry(google)
+    assert outcome.result == "failed"
+    return outcome.detail
 
 
 def test_a_failed_stop_after_a_failed_save_names_the_channel_that_was_left_open(
