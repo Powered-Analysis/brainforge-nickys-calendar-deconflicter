@@ -19,6 +19,8 @@ REAUTH_PATH = "/oauth/sentience/reauth"
 REFRESH_MARGIN_SECONDS = 60
 # How long an operator has to finish signing in before the pending authorization is discarded.
 PENDING_AUTHORIZATION_LIFETIME_SECONDS = 600
+# The reauth link is public, so unfinished authorizations are capped; the oldest go first.
+MAX_PENDING_AUTHORIZATIONS = 20
 CLIENT_NAME = "Calendar Deconflicter"
 SCOPE = "sentience"
 
@@ -222,6 +224,8 @@ def start_authorization(client: httpx2.Client, now: int) -> str:
         db.save_sentience_client_id(client_id)
     # Abandoned runs would otherwise keep a usable verifier and state forever.
     db.delete_expired_pending_authorizations(pending_authorization_cutoff(now))
+    # Leaves room for the one about to be stored.
+    db.keep_newest_pending_authorizations(MAX_PENDING_AUTHORIZATIONS - 1)
     code_verifier = new_code_verifier()
     state = secrets.token_urlsafe(32)
     db.save_pending_authorization(state, code_verifier, now)
