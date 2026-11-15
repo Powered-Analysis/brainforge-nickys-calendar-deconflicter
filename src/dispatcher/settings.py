@@ -1,33 +1,18 @@
-"""The one place the app reads its settings: the names listed in `.env.example`."""
+"""The one place the app reads its settings. The names it may read are those in `.env.example`."""
 
 import os
 from pathlib import Path
 
 from dispatcher.errors import OperatorError
 
-NAMES = (
-    "GCP_CLIENT_ID",
-    "GCP_CLIENT_SECRET",
-    "GCP_REFRESH_TOKEN",
-    "GOOGLE_WORKSPACE_DOMAIN",
-    "TURSO_DATABASE_URL",
-    "TURSO_AUTH_TOKEN",
-    "PUBLIC_BASE_URL",
-    "INTERNAL_CRON_SECRET",
-    "RESEND_API_KEY",
-    "ALERT_TO",
-    "SENTIENCE_MCP_URL",
-    "SENTIENCE_AUTH_ISSUER",
-)
-
+# `.env.example` sits at the repository root, which the image also copies to /app.
+ENV_EXAMPLE_FILE = Path(__file__).resolve().parents[2] / ".env.example"
 ENV_FILE = Path(".env")
 
 
-def _read_env_file() -> dict[str, str]:
-    if not ENV_FILE.is_file():
-        return {}
+def _read_assignments(path: Path) -> dict[str, str]:
     values = {}
-    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -39,13 +24,18 @@ def _read_env_file() -> dict[str, str]:
     return values
 
 
+NAMES = tuple(_read_assignments(ENV_EXAMPLE_FILE))
+
+
 def get(name: str) -> str | None:
     """The setting's value, or None when it is unset. A real environment variable wins over `.env`."""
     if name not in NAMES:
         raise KeyError(f"{name} is not a setting the app reads")
     if name in os.environ:
         return os.environ[name]
-    return _read_env_file().get(name)
+    if not ENV_FILE.is_file():
+        return None
+    return _read_assignments(ENV_FILE).get(name)
 
 
 def require(name: str) -> str:
