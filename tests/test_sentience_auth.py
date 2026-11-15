@@ -676,3 +676,107 @@ def test_a_mismatched_issuer_sends_no_request_to_the_auth_server_at_all(
     sent_before = len(fake.requests)
     callback(client, code=CODE, state=params["state"], iss="https://evil.example.org")
     assert len(fake.requests) == sent_before
+
+
+# --- 7. Pending authorizations expire after 600 seconds --------------------------------------
+
+LIFETIME = 600
+
+
+def pending_states():
+    return {r[0] for r in query("SELECT state FROM sentience_pending_authorization")}
+
+
+def seed_pending(state, age, now=None):
+    """A pending authorization created `age` seconds before `now`, with a stored client."""
+    now = int(time.time()) if now is None else now
+    db.save_sentience_client_id(CLIENT_ID)
+    db.save_pending_authorization(state, "v" * 43, now - age)
+    return now
+
+
+def test_a_callback_for_a_state_older_than_600_seconds_is_a_400_with_no_token_request(
+    fake, settings_env, client
+):
+    seed_old_tokens()
+    seed_pending("stale-state", LIFETIME + 5)
+    assert_rejected_without_a_token_request(
+        fake, callback(client, code=CODE, state="stale-state")
+    )
+
+
+def test_a_stale_state_answers_like_an_unknown_one(fake, settings_env, client):
+    seed_pending("stale-state", LIFETIME + 5)
+    stale = callback(client, code=CODE, state="stale-state")
+    unknown = callback(client, code=CODE, state="never-issued")
+    assert (stale.status_code, stale.text) == (unknown.status_code, unknown.text)
+
+
+def test_a_callback_within_the_lifetime_completes_as_before(fake, settings_env, client):
+    seed_pending("fresh-state", LIFETIME - 30)
+    response = callback(client, code=CODE, state="fresh-state")
+    assert response.status_code == 200
+    assert len(fake.token_requests) == 1
+    assert [r[1] for r in stored_tokens()] == [ACCESS_TOKEN]
+
+
+def test_a_state_exactly_600_seconds_old_still_completes(fake, settings_env):
+    now = seed_pending("edge-state", LIFETIME)
+    with http.client() as shared:
+        assert sentience_auth.complete_authorization(shared, "edge-state", CODE, now)
+    assert len(fake.token_requests) == 1
+
+
+def test_a_state_601_seconds_old_is_rejected(fake, settings_env):
+    now = seed_pending("edge-state", LIFETIME + 1)
+    with http.client() as shared:
+        assert not sentience_auth.complete_authorization(
+            shared, "edge-state", CODE, now
+        )
+    assert fake.token_requests == []
+
+
+def test_an_expired_state_is_not_revived_by_a_later_callback(fake, settings_env):
+    now = seed_pending("edge-state", LIFETIME + 1)
+    with http.client() as shared:
+        assert not sentience_auth.complete_authorization(
+            shared, "edge-state", CODE, now
+        )
+        assert not sentience_auth.complete_authorization(
+            shared, "edge-state", CODE, now - LIFETIME
+        )
+    assert fake.token_requests == []
+
+
+def test_a_callback_deletes_every_expired_row_and_keeps_the_live_ones(
+    fake, settings_env, client
+):
+    now = seed_pending("stale-1", LIFETIME + 100)
+    seed_pending("stale-2", LIFETIME + 1, now)
+    seed_pending("live", 10, now)
+    callback(client, code=CODE, state="never-issued")
+    assert pending_states() == {"live"}
+
+
+def test_starting_a_sign_in_deletes_expired_rows_and_keeps_the_live_ones(sign_in, fake):
+    now = seed_pending("stale", LIFETIME + 1)
+    seed_pending("live", 10, now)
+    params = sign_in()
+    assert pending_states() == {"live", params["state"]}
+
+
+def test_abandoned_sign_ins_do_not_accumulate(sign_in, fake):
+    for _ in range(3):
+        sign_in()
+    assert len(pending_states()) == 3
+    query(
+        "UPDATE sentience_pending_authorization SET created_at = created_at - ?",
+        (LIFETIME + 60,),
+    )
+    last = sign_in()
+    assert pending_states() == {last["state"]}
+
+
+def test_a_sign_in_just_started_completes_through_the_callback(sign_in, fake, client):
+    params = sign_in()
+    assert callback(client, code=CODE, state=params["state"]).status_code == 200
