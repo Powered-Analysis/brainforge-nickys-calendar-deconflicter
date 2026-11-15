@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from dispatcher import attach, db, http, ingress, sentience_auth, settings, watches
 from dispatcher.errors import OperatorError
@@ -71,6 +71,8 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
     # The body names no calendar, channel, or event: the renewal workflow's log is public.
     try:
         failures = []
+        # Sentience's standing signal: the renewal still runs, and then fails.
+        expired = db.is_sentience_auth_expired()
         # With nothing to renew, no Google or address setting is needed.
         if channels := db.get_active_channels():
             failures = watches.renew_all(
@@ -82,6 +84,8 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
         raise HTTPException(status_code=500, detail=str(error)) from error
     for message in failures:
         log.warning("Renewal failed: %s", message)
+    if expired:
+        return Response(status_code=503)
     return Response(status_code=502 if failures else 200)
 
 
@@ -124,4 +128,20 @@ def sentience_callback(
         return _page(not_connected, 502)
     if not connected:
         return _page(not_connected, 400)
+    # Recovery: the conflicts that went undelivered while access was lost.
+    ingress.process_active_calendars()
     return _page("Sentience Connected Successfully.", 200)
+
+
+@app.get(sentience_auth.REAUTH_PATH)
+def sentience_reauth() -> Response:
+    # The link is public, and whoever finishes the sign-in it starts chooses which Sentience
+    # account receives the operator's conflicts, so it works only while access has lapsed.
+    try:
+        if not db.is_sentience_auth_expired():
+            return _page("Sentience doesn't need to be reauthorized.", 409)
+        with http.client() as client:
+            url = sentience_auth.start_authorization(client, int(time.time()))
+    except OperatorError:
+        return _page("Sentience couldn't be reached to start the sign-in.", 502)
+    return RedirectResponse(url, status_code=302)

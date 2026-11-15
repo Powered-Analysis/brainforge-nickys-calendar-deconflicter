@@ -1,4 +1,4 @@
-"""The one HTTP client for every call to Sentience's auth server."""
+"""The one HTTP client for every call to Sentience's auth server and to Resend."""
 
 import httpx
 

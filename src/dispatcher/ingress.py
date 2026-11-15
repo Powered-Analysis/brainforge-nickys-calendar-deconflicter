@@ -2,17 +2,19 @@
 delivering each conflict they raise."""
 
 import functools
+import logging
 import threading
 import time
 from datetime import UTC, datetime
 
-from dispatcher import conflicts, db, sentience_mcp, settings
+from dispatcher import conflicts, db, sentience_auth, settings
 from dispatcher.errors import OperatorError
 from dispatcher.google_calendar import GoogleCalendar, SyncTokenExpired
 
 # One delta at a time across the app. A conflict can be found from either of its two
 # calendars, and two notifications must not both dispatch it. The app is one process.
 _one_delta_at_a_time = threading.Lock()
+log = logging.getLogger(__name__)
 
 
 def _deliver_conflicts(
@@ -58,12 +60,7 @@ def _deliver_conflicts(
             event_hash = conflicts.event_hash(conflict)
             if db.is_conflict_processed(event_hash):
                 continue
-            access_token = db.get_sentience_access_token()
-            if access_token is None:
-                raise sentience_mcp.DispatchFailed("Sentience is not connected")
-            sentience_mcp.dispatch(
-                access_token, conflicts.message(conflict, time_zone())
-            )
+            sentience_auth.deliver(conflicts.message(conflict, time_zone()))
             db.record_processed_conflict(event_hash, calendar_id, int(time.time()))
 
 
@@ -101,3 +98,15 @@ def process_notification(channel_id: str) -> bool:
         _deliver_conflicts(google, calendar_id, events)
         db.save_sync_token(calendar_id, next_sync_token)
         return True
+
+
+def process_active_calendars() -> None:
+    """Process the delta of every active calendar, one at a time, so the conflicts that went
+    undelivered are delivered. A calendar that fails is logged and left for its next
+    notification, and the rest still run."""
+    for channel in db.get_active_channels():
+        try:
+            process_notification(channel.channel_id)
+        except OperatorError as error:
+            # The message names no calendar, because the app's log is public.
+            log.warning("Processing a calendar's changes failed: %s", error)
