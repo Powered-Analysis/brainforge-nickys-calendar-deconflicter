@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import google_auth_httplib2
@@ -90,17 +91,8 @@ class GoogleCalendar:
             if not page_token:
                 return entries
 
-    def read_events(
-        self, calendar_id: str, sync_token: str | None = None
-    ) -> tuple[list[dict], str]:
-        """Every page of `events.list`, and the `syncToken` Google issues for this moment.
-
-        With a `sync_token` the events are only what changed since it; without one, every
-        event. Raises SyncTokenExpired when Google answers 410 to a `sync_token`.
-
-        Recurring Series as One Commitment, Reading: `singleEvents` stays unset, so a series
-        is one event.
-        """
+    def _list_events(self, calendar_id: str, **params: Any) -> tuple[list[dict], dict]:
+        """Every page of `events.list` for the parameters, and the last page."""
         events: list[dict] = []
         page_token = None
         while True:
@@ -112,12 +104,12 @@ class GoogleCalendar:
                             calendarId=calendar_id,
                             maxResults=PAGE_SIZE,
                             pageToken=page_token,
-                            syncToken=sync_token,
+                            **params,
                         )
                         .execute()
                     )
                 except HttpError as exc:
-                    if sync_token and exc.resp.status == 410:
+                    if params.get("syncToken") and exc.resp.status == 410:
                         raise SyncTokenExpired(
                             "Google no longer honors the calendar's syncToken"
                         ) from exc
@@ -125,11 +117,38 @@ class GoogleCalendar:
             events.extend(page.get("items", []))
             page_token = page.get("nextPageToken")
             if not page_token:
-                break
-        next_sync_token = page.get("nextSyncToken")
+                return events, page
+
+    def read_events(
+        self, calendar_id: str, sync_token: str | None = None
+    ) -> tuple[list[dict], str]:
+        """Every page of `events.list`, and the `syncToken` Google issues for this moment.
+
+        With a `sync_token` the events are only what changed since it; without one, every
+        event. Raises SyncTokenExpired when Google answers 410 to a `sync_token`.
+
+        Recurring Series as One Commitment, Reading: `singleEvents` stays unset, so a series
+        is one event.
+        """
+        events, last_page = self._list_events(calendar_id, syncToken=sync_token)
+        next_sync_token = last_page.get("nextSyncToken")
         if not next_sync_token:
             raise GoogleRequestFailed("Google returned no syncToken for the calendar")
         return events, next_sync_token
+
+    def events_between(
+        self, calendar_id: str, start: datetime, end: datetime
+    ) -> list[dict]:
+        """The events that overlap `[start, end)`; a series comes back as one event.
+
+        Google leaves out an event that ends at or before `start` or starts at or after `end`.
+        """
+        events, _ = self._list_events(
+            calendar_id,
+            timeMin=start.astimezone(UTC).isoformat(),
+            timeMax=end.astimezone(UTC).isoformat(),
+        )
+        return events
 
     def read_sync_token(self, calendar_id: str) -> str:
         """The `syncToken` that marks this moment, from a read of every event."""

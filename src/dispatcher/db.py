@@ -157,6 +157,33 @@ def save_sync_token(calendar_id: str, sync_token: str | None) -> None:
         )
 
 
+def get_sentience_access_token() -> str | None:
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT access_token FROM sentience_auth WHERE id = ?", (SENTIENCE_ID,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def is_conflict_processed(event_hash: str) -> bool:
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM processed_events WHERE event_hash = ?", (event_hash,)
+        ).fetchone()
+    return row is not None
+
+
+def record_processed_conflict(
+    event_hash: str, calendar_id: str, processed_at: int
+) -> None:
+    with _connection() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO processed_events (event_hash, calendar_id, processed_at) "
+            "VALUES (?, ?, ?)",
+            (event_hash, calendar_id, processed_at),
+        )
+
+
 def save_attached_calendar(
     calendar_id: str,
     channel_id: str,
