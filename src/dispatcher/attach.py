@@ -50,6 +50,29 @@ def watch_record(response: dict) -> tuple[str, int]:
 # The functions up to here decide without touching the network or the database.
 
 
+def stop_unrecorded_channel(
+    google: GoogleCalendar,
+    channel_id: str,
+    resource_id: str,
+    save_error: Exception,
+) -> None:
+    """Stop a new channel whose row could not be saved.
+
+    Raises GoogleRequestFailed naming both failures when the stop fails too. The caller
+    re-raises the save error when this returns.
+    """
+    # Without a row, renewal and detach could never find the channel, and Google would keep
+    # sending notifications for it until it expires.
+    try:
+        google.stop_channel(channel_id, resource_id)
+    except GoogleRequestFailed as stop_error:
+        # Naming both failures keeps the operator from reading this as a Google-only error.
+        raise GoogleRequestFailed(
+            f"saving the calendar failed ({save_error}), and channel {channel_id} could "
+            f"not be stopped, so Google may still send notifications for it: {stop_error}"
+        ) from stop_error
+
+
 def _attach_entry(
     google: GoogleCalendar, entry: dict, address: str, now: int
 ) -> Outcome:
@@ -69,16 +92,7 @@ def _attach_entry(
             calendar_id, channel_id, resource_id, expiration, sync_token, now
         )
     except Exception as save_error:
-        # Without a row, renewal and detach could never find the channel, and Google would keep
-        # sending notifications for it until it expires.
-        try:
-            google.stop_channel(channel_id, resource_id)
-        except GoogleRequestFailed as stop_error:
-            # Naming both failures keeps the operator from reading this as a Google-only error.
-            raise GoogleRequestFailed(
-                f"saving the calendar failed ({save_error}), and channel {channel_id} could "
-                f"not be stopped, so Google may still send notifications for it: {stop_error}"
-            ) from stop_error
+        stop_unrecorded_channel(google, channel_id, resource_id, save_error)
         raise
     return Outcome(calendar_id, "attached", title(entry))
 
