@@ -110,14 +110,6 @@ def ensure_schema() -> None:
             conn.execute(statement)
 
 
-def is_calendar_active(calendar_id: str) -> bool:
-    with _connection() as conn:
-        row = conn.execute(
-            "SELECT active FROM calendars WHERE calendar_id = ?", (calendar_id,)
-        ).fetchone()
-    return bool(row and row[0])
-
-
 def get_active_channel(calendar_id: str) -> Channel | None:
     with _connection() as conn:
         row = conn.execute(
