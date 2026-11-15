@@ -69,8 +69,9 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
             headers={"WWW-Authenticate": "Bearer"},
         )
     # The body names no calendar, channel, or event: the renewal workflow's log is public.
+    expired = False
+    failures = []
     try:
-        failures = []
         # Sentience's standing signal: the renewal still runs, and then fails.
         expired = db.is_sentience_auth_expired()
         # With nothing to renew, no Google or address setting is needed.
@@ -82,6 +83,9 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
             )
     except OperatorError as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
+    except db.Error:
+        # The database's own message could carry a calendar ID, so it is left out.
+        failures = ["the database failed before any calendar was renewed"]
     for message in failures:
         log.warning("Renewal failed: %s", message)
     if expired:
