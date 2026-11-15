@@ -579,3 +579,100 @@ def test_the_shared_client_uses_the_injected_transport(fake):
     with http.client() as shared:
         assert shared.get(f"{ISSUER}/anywhere").status_code == 404
     assert len(fake.requests) == 1
+
+
+# --- 11. Authorization-server issuer on the callback (RFC 9207, issue #14) -------------------
+
+
+@pytest.mark.parametrize(
+    "iss",
+    [
+        "https://evil.example.org",
+        "https://auth.example.com.evil.example.org",
+        "https://auth.example.com/extra",
+        "http://auth.example.com",
+        "https://AUTH.example.com",
+        "https://auth.example.co",
+        "",
+    ],
+    ids=[
+        "other-host",
+        "issuer-as-prefix-of-other-host",
+        "issuer-with-path",
+        "other-scheme",
+        "other-case",
+        "truncated-issuer",
+        "empty",
+    ],
+)
+def test_a_callback_whose_issuer_differs_is_a_400_with_no_token_request(
+    sign_in, fake, client, iss
+):
+    seed_old_tokens()
+    params = sign_in()
+    response = callback(client, code=CODE, state=params["state"], iss=iss)
+    assert_rejected_without_a_token_request(fake, response)
+    assert "wasn't connected" in html.unescape(response.text)
+
+
+def test_a_callback_with_the_configured_issuer_completes_the_exchange(
+    sign_in, fake, client
+):
+    params = sign_in()
+    response = callback(client, code=CODE, state=params["state"], iss=ISSUER)
+    assert response.status_code == 200
+    assert len(fake.token_requests) == 1
+    [(client_id, access, refresh, _, _)] = stored_tokens()
+    assert (client_id, access, refresh) == (CLIENT_ID, ACCESS_TOKEN, REFRESH_TOKEN)
+
+
+def test_a_callback_without_an_issuer_still_completes_the_exchange(
+    sign_in, fake, client
+):
+    params = sign_in()
+    response = callback(client, code=CODE, state=params["state"])
+    assert response.status_code == 200
+    assert len(fake.token_requests) == 1
+
+
+def test_the_issuer_is_checked_against_the_configured_setting(
+    fake, monkeypatch, browser, client
+):
+    monkeypatch.setenv("SENTIENCE_AUTH_ISSUER", "https://other-auth.example.com")
+    monkeypatch.setenv("PUBLIC_BASE_URL", BASE_URL)
+    cli.main(["auth", "sentience"])
+    params = {k: v[0] for k, v in parse_qs(urlsplit(browser[-1]).query).items()}
+    rejected = callback(client, code=CODE, state=params["state"], iss=ISSUER)
+    assert rejected.status_code == 400
+    assert fake.token_requests == []
+    accepted = callback(
+        client,
+        code=CODE,
+        state=params["state"],
+        iss="https://other-auth.example.com",
+    )
+    assert accepted.status_code == 200
+    assert len(fake.token_requests) == 1
+
+
+def test_a_mismatched_issuer_with_an_error_parameter_is_still_a_400(
+    sign_in, fake, client
+):
+    seed_old_tokens()
+    params = sign_in()
+    response = callback(
+        client,
+        error="access_denied",
+        state=params["state"],
+        iss="https://evil.example.org",
+    )
+    assert_rejected_without_a_token_request(fake, response)
+
+
+def test_a_mismatched_issuer_sends_no_request_to_the_auth_server_at_all(
+    sign_in, fake, client
+):
+    params = sign_in()
+    sent_before = len(fake.requests)
+    callback(client, code=CODE, state=params["state"], iss="https://evil.example.org")
+    assert len(fake.requests) == sent_before
