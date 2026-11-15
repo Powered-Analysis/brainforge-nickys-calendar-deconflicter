@@ -36,6 +36,9 @@ def renew_all(
             _renew(google, channel, address)
         except OperatorError as error:
             failures.append(str(error))
+        except db.Error:
+            # The database's own message could carry a calendar ID, so it is left out.
+            failures.append("the database failed while renewing a calendar")
     return failures
 
 

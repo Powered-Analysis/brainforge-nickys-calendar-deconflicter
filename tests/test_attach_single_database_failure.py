@@ -85,17 +85,17 @@ def test_a_database_error_is_not_raised_out_of_attach_one(google, monkeypatch):
     attach.attach_one(GoogleCalendar(), WORK, WEBHOOK, NOW)
 
 
-def test_a_failed_stop_after_a_failed_save_still_reports_both_failures_as_an_error(
+def test_a_failed_stop_after_a_failed_save_still_reports_both_failures_as_failed(
     google, monkeypatch
 ):
     """The database failure is not the whole story when Google could not stop the channel, so
-    the operator-facing error names both (a Google failure is not turned into a database one)."""
+    the failed outcome's detail names both."""
     fail_every_save(monkeypatch)
     google.stop_failures = _every_channel_fails()
-    with pytest.raises(Exception) as raised:
-        attach.attach_one(GoogleCalendar(), WORK, WEBHOOK, NOW)
-    assert MESSAGE in str(raised.value)
-    assert "stopped" in str(raised.value)
+    outcome = attach.attach_one(GoogleCalendar(), WORK, WEBHOOK, NOW)
+    assert outcome.result == "failed"
+    assert MESSAGE in outcome.detail
+    assert "stopped" in outcome.detail
 
 
 def _every_channel_fails():
