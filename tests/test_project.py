@@ -1,4 +1,5 @@
 import ast
+import re
 import subprocess
 import sys
 import tomllib
@@ -137,3 +138,30 @@ def test_readme_covers_install_test_image_and_single_machine_deploy():
     assert "fly deploy" in readme
     assert "--ha=false" in readme
     assert "fly secrets" in readme
+
+
+def _uv_image_references():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    return [
+        token
+        for line in dockerfile.splitlines()
+        if line.startswith("COPY ") and "--from=" in line
+        for token in line.split()
+        if token.startswith("--from=") and "astral-sh/uv" in token
+    ]
+
+
+def test_the_uv_image_is_pinned_to_a_version_not_latest():
+    references = _uv_image_references()
+    assert len(references) == 1
+    reference = references[0].removeprefix("--from=")
+    assert "@sha256:" in reference or ":" in reference.rsplit("/", 1)[-1]
+    assert not reference.endswith(":latest")
+
+
+def test_the_uv_image_tag_is_a_full_version_number():
+    reference = _uv_image_references()[0].removeprefix("--from=")
+    if "@sha256:" in reference:
+        return
+    tag = reference.rsplit(":", 1)[-1]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", tag), tag
