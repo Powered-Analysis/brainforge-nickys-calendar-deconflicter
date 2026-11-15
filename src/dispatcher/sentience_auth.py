@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-import httpx
+import httpx2
 
 from dispatcher import alert, db, http, sentience_mcp, settings
 from dispatcher.errors import OperatorError
@@ -134,7 +134,7 @@ def tokens_from_response(payload: dict, now: int) -> Tokens | None:
     )
 
 
-def _json_object(response: httpx.Response) -> dict:
+def _json_object(response: httpx2.Response) -> dict:
     try:
         body = response.json()
     except ValueError:
@@ -142,7 +142,7 @@ def _json_object(response: httpx.Response) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def is_invalid_grant(response: httpx.Response) -> bool:
+def is_invalid_grant(response: httpx2.Response) -> bool:
     # OAuth sends `invalid_grant` with 400 and the PRD names 401: the error decides, not the status.
     return (
         not response.is_success
@@ -150,7 +150,7 @@ def is_invalid_grant(response: httpx.Response) -> bool:
     )
 
 
-def _failure_reason(response: httpx.Response) -> str:
+def _failure_reason(response: httpx2.Response) -> str:
     """The status and the OAuth error fields, which never hold a credential."""
     body = _json_object(response)
     detail = " ".join(
@@ -161,16 +161,16 @@ def _failure_reason(response: httpx.Response) -> str:
     return f"HTTP {response.status_code} {detail}".strip()
 
 
-def _post_token_form(client: httpx.Client, form: dict) -> httpx.Response:
+def _post_token_form(client: httpx2.Client, form: dict) -> httpx2.Response:
     issuer = settings.require("SENTIENCE_AUTH_ISSUER")
     try:
         return client.post(endpoint(issuer, "token"), data=form)
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         log.warning("Sentience token request failed: %s", type(exc).__name__)
         raise TokenRequestFailed(type(exc).__name__) from exc
 
 
-def _tokens_from_response(response: httpx.Response, now: int) -> Tokens:
+def _tokens_from_response(response: httpx2.Response, now: int) -> Tokens:
     tokens = (
         tokens_from_response(_json_object(response), now)
         if response.is_success
@@ -183,12 +183,12 @@ def _tokens_from_response(response: httpx.Response, now: int) -> Tokens:
     return tokens
 
 
-def register_client(client: httpx.Client, issuer: str, redirect_uri: str) -> str:
+def register_client(client: httpx2.Client, issuer: str, redirect_uri: str) -> str:
     try:
         response = client.post(
             endpoint(issuer, "register"), json=registration_body(redirect_uri)
         )
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         raise OperatorError(
             f"Sentience registration failed: {type(exc).__name__}: {exc}"
         ) from exc
@@ -200,7 +200,7 @@ def register_client(client: httpx.Client, issuer: str, redirect_uri: str) -> str
     return client_id
 
 
-def start_authorization(client: httpx.Client, now: int) -> str:
+def start_authorization(client: httpx2.Client, now: int) -> str:
     """Register if no client is stored, store a pending authorization, and return the sign-in URL."""
     issuer = settings.require("SENTIENCE_AUTH_ISSUER")
     redirect_uri = callback_url(settings.require("PUBLIC_BASE_URL"))
@@ -215,7 +215,7 @@ def start_authorization(client: httpx.Client, now: int) -> str:
 
 
 def complete_authorization(
-    client: httpx.Client, state: str, code: str, now: int
+    client: httpx2.Client, state: str, code: str, now: int
 ) -> bool:
     """Exchange the code for tokens and store them.
 
@@ -244,7 +244,7 @@ def complete_authorization(
     )
 
 
-def _expire(client: httpx.Client, now: int) -> None:
+def _expire(client: httpx2.Client, now: int) -> None:
     """Mark access expired and send the alert once for this expiry."""
     if db.mark_sentience_auth_expired(now):
         alert.send_reauthorization_alert(

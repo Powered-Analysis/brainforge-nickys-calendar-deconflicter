@@ -11,7 +11,7 @@ import uuid
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
-import httpx
+import httpx2
 import pytest
 from googleapiclient import discovery_cache
 
@@ -236,9 +236,9 @@ def sentience(monkeypatch):
 
     def handler(request):
         seen.append(request)
-        return httpx.Response(500)
+        return httpx2.Response(500)
 
-    monkeypatch.setattr(http, "transport", httpx.MockTransport(handler))
+    monkeypatch.setattr(http, "transport", httpx2.MockTransport(handler))
     return seen
 
 

@@ -13,7 +13,7 @@ import re
 import time
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -73,7 +73,7 @@ def form(request):
 
 
 def tokens_ok(request):
-    return httpx.Response(
+    return httpx2.Response(
         200,
         json={
             "access_token": NEW_ACCESS,
@@ -85,15 +85,15 @@ def tokens_ok(request):
 
 
 def invalid_grant_400(request):
-    return httpx.Response(400, json={"error": "invalid_grant"})
+    return httpx2.Response(400, json={"error": "invalid_grant"})
 
 
 def invalid_grant_401(request):
-    return httpx.Response(401, json={"error": "invalid_grant"})
+    return httpx2.Response(401, json={"error": "invalid_grant"})
 
 
 def failing_transport(request):
-    raise httpx.ConnectError("unreachable", request=request)
+    raise httpx2.ConnectError("unreachable", request=request)
 
 
 class Network:
@@ -102,7 +102,7 @@ class Network:
     def __init__(self):
         self.requests = []
         self.token_response = tokens_ok
-        self.resend_response = lambda request: httpx.Response(200, json={"id": "x"})
+        self.resend_response = lambda request: httpx2.Response(200, json={"id": "x"})
 
     def __call__(self, request):
         self.requests.append(request)
@@ -113,7 +113,7 @@ class Network:
             and request.url.path == "/oauth/mcp-issuer/token"
         ):
             return self.token_response(request)
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
     @property
     def refreshes(self):
@@ -172,7 +172,7 @@ def google(monkeypatch):
 @pytest.fixture
 def net(monkeypatch):
     network = Network()
-    monkeypatch.setattr(http, "transport", httpx.MockTransport(network))
+    monkeypatch.setattr(http, "transport", httpx2.MockTransport(network))
     return network
 
 
@@ -361,7 +361,7 @@ def test_a_refresh_stores_the_new_access_token_its_expiry_and_the_replacement_re
 def test_without_a_replacement_the_old_refresh_token_is_kept(
     client, google, calendars, net, mcp
 ):
-    net.token_response = lambda request: httpx.Response(
+    net.token_response = lambda request: httpx2.Response(
         200, json={"access_token": NEW_ACCESS, "expires_in": 3600}
     )
     lapsed()
@@ -386,9 +386,9 @@ def test_the_next_refresh_uses_the_replacement_refresh_token(
 @pytest.mark.parametrize(
     "response",
     [
-        lambda request: httpx.Response(200, json={"refresh_token": NEW_REFRESH}),
-        lambda request: httpx.Response(200, text="not json"),
-        lambda request: httpx.Response(500, text="boom"),
+        lambda request: httpx2.Response(200, json={"refresh_token": NEW_REFRESH}),
+        lambda request: httpx2.Response(200, text="not json"),
+        lambda request: httpx2.Response(500, text="boom"),
     ],
     ids=["no-access-token", "not-json", "server-error"],
 )
@@ -413,7 +413,7 @@ def test_a_token_that_lapses_within_a_minute_is_refreshed_again_before_its_next_
     payload = {"access_token": NEW_ACCESS, "refresh_token": NEW_REFRESH}
     if lifetime is not None:
         payload["expires_in"] = lifetime
-    net.token_response = lambda request: httpx.Response(200, json=payload)
+    net.token_response = lambda request: httpx2.Response(200, json=payload)
     lapsed()
     conflict(google)
     notify(client)
@@ -514,11 +514,11 @@ def test_invalid_grant_marks_access_expired_whatever_the_status(
     "response",
     [
         failing_transport,
-        lambda request: httpx.Response(500, text="boom"),
-        lambda request: httpx.Response(503, json={"error": "temporarily_unavailable"}),
-        lambda request: httpx.Response(400, json={"error": "invalid_request"}),
-        lambda request: httpx.Response(401, json={"error": "invalid_client"}),
-        lambda request: httpx.Response(400, text="invalid_grant"),
+        lambda request: httpx2.Response(500, text="boom"),
+        lambda request: httpx2.Response(503, json={"error": "temporarily_unavailable"}),
+        lambda request: httpx2.Response(400, json={"error": "invalid_request"}),
+        lambda request: httpx2.Response(401, json={"error": "invalid_client"}),
+        lambda request: httpx2.Response(400, text="invalid_grant"),
     ],
     ids=[
         "transport-error",
@@ -545,7 +545,7 @@ def test_any_other_refresh_failure_is_undelivered_without_marking_access_expired
 def test_a_later_notification_delivers_once_the_refresh_works_again(
     client, google, calendars, net, mcp
 ):
-    net.token_response = lambda request: httpx.Response(500)
+    net.token_response = lambda request: httpx2.Response(500)
     lapsed()
     conflict(google)
     assert notify(client).status_code == 503
@@ -686,8 +686,8 @@ def test_no_further_email_is_sent_while_access_stays_expired(
 @pytest.mark.parametrize(
     "resend",
     [
-        lambda request: httpx.Response(500, text="boom"),
-        lambda request: httpx.Response(403, json={"message": "bad key"}),
+        lambda request: httpx2.Response(500, text="boom"),
+        lambda request: httpx2.Response(403, json={"message": "bad key"}),
         failing_transport,
     ],
     ids=["500", "403", "transport-error"],
@@ -721,7 +721,7 @@ def test_an_unset_alert_setting_is_a_failed_send_not_a_crash(
 
 
 def test_a_failed_send_is_logged(caplog, client, google, calendars, net, mcp):
-    net.resend_response = lambda request: httpx.Response(500, text="boom")
+    net.resend_response = lambda request: httpx2.Response(500, text="boom")
     net.token_response = invalid_grant_400
     lapsed()
     conflict(google)
@@ -1045,15 +1045,15 @@ def assert_no_secret(text):
         invalid_grant_400,
         invalid_grant_401,
         failing_transport,
-        lambda request: httpx.Response(500, text="boom"),
+        lambda request: httpx2.Response(500, text="boom"),
     ],
     ids=["success", "invalid-grant-400", "invalid-grant-401", "transport-error", "500"],
 )
 @pytest.mark.parametrize(
     "resend_response",
     [
-        lambda request: httpx.Response(200, json={"id": "x"}),
-        lambda request: httpx.Response(500, text="boom"),
+        lambda request: httpx2.Response(200, json={"id": "x"}),
+        lambda request: httpx2.Response(500, text="boom"),
         failing_transport,
     ],
     ids=["sent", "send-500", "send-transport-error"],
