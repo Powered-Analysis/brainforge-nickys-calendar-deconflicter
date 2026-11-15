@@ -95,4 +95,8 @@ def attach_all(google: GoogleCalendar, address: str, now: int) -> list[Outcome]:
             outcomes.append(_attach_entry(google, entry, address, now))
         except OperatorError as error:
             outcomes.append(Outcome(entry["id"], "failed", str(error)))
+        except db.Error as error:
+            outcomes.append(
+                Outcome(entry["id"], "failed", f"the database failed: {error}")
+            )
     return outcomes
