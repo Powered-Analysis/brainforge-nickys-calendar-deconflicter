@@ -114,10 +114,17 @@ def _page(message: str, status_code: int) -> HTMLResponse:
 
 @app.get(sentience_auth.CALLBACK_PATH)
 def sentience_callback(
-    code: str | None = None, state: str | None = None, error: str | None = None
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    iss: str | None = None,
 ) -> HTMLResponse:
     not_connected = "Sentience wasn't connected."
     if error is not None or not code or not state:
+        return _page(not_connected, 400)
+    if iss is not None and not sentience_auth.issuer_matches(
+        iss, settings.require("SENTIENCE_AUTH_ISSUER")
+    ):
         return _page(not_connected, 400)
     try:
         with http.client() as client:

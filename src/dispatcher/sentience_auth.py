@@ -55,6 +55,11 @@ def endpoint(issuer: str, name: str) -> str:
     return f"{issuer.rstrip('/')}/oauth/mcp-issuer/{name}"
 
 
+def issuer_matches(iss: str, issuer: str) -> bool:
+    # RFC 9207: a response that names its issuer must name the one this app configured.
+    return iss == issuer.rstrip("/")
+
+
 def callback_url(public_base_url: str) -> str:
     return f"{public_base_url.rstrip('/')}{CALLBACK_PATH}"
 
