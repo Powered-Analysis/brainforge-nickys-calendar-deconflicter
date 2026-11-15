@@ -45,7 +45,9 @@ def _deliver_conflicts(
         incoming = conflicts.meeting_from_event(calendar_id, event, domain, time_zone)
         # A meeting that has ended can't have an overlap still ahead. A series' own interval
         # is its first occurrence's, so it says nothing about the occurrences still to come.
-        if incoming is None or (not incoming.recurrence and incoming.end <= now):
+        if incoming is None or (
+            not incoming.recurrence and conflicts.has_ended(incoming.end, now)
+        ):
             continue
         found = _conflicts_with_the_calendars(
             google, incoming, active_calendars, now, domain, time_zone
