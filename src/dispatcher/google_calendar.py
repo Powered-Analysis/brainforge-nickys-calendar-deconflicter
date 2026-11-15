@@ -116,3 +116,17 @@ class GoogleCalendar:
         """Open a notification channel. This is one of the app's two writes to Google."""
         with _execute_errors():
             return self._api.events().watch(calendarId=calendar_id, body=body).execute()
+
+    def stop_channel(self, channel_id: str, resource_id: str) -> None:
+        """Close a notification channel. This is the app's other write to Google.
+
+        A 404 means the channel is already gone, which is what the caller wants.
+        """
+        with _execute_errors():
+            try:
+                self._api.channels().stop(
+                    body={"id": channel_id, "resourceId": resource_id}
+                ).execute()
+            except HttpError as exc:
+                if exc.resp.status != 404:
+                    raise

@@ -96,3 +96,17 @@ For each calendar you own, the command reads its events once to record a startin
 - A calendar that was detached is attached again, with a new channel and starting point.
 - With `all`, a failure on one calendar is reported and the rest still attach; the command exits nonzero if any failed.
 - The command refuses, before calling Google, if `PUBLIC_BASE_URL` or a Google setting is unset, and the message names it.
+
+## Keep monitoring running (First-Time Setup, step 5)
+
+Google's notification channels expire, so the workflow `.github/workflows/renew-watches.yml` calls `POST /internal/renew-watches` every 3 days. For each attached calendar, the endpoint opens a new channel at `<PUBLIC_BASE_URL>/webhooks/gcal`, stores it, and then closes the old one. The calendar's starting point is unchanged, and detached calendars are left alone.
+
+The endpoint answers `200` when every calendar was renewed, or when none is attached. It answers `502` when any calendar failed, after renewing the others, so the workflow's run fails. A calendar whose new channel could not be opened keeps its old one. An old channel that Google no longer knows (`404`) is not a failure; any other failed close is, and the new channel is still stored. The response body names no calendar, because the workflow's log is public. It answers `500` when a setting it needs is unset: `INTERNAL_CRON_SECRET`, the database, and, once a calendar is attached, `PUBLIC_BASE_URL` and the Google settings.
+
+## Detach a calendar
+
+```bash
+uv run python -m dispatcher calendar detach <calendar_id>
+```
+
+The command closes the calendar's Google channel and marks the calendar inactive. The row stays, and `calendar attach` can attach it again. If Google no longer knows the channel (`404`), the calendar is still marked inactive. A calendar that is not attached, or is already detached, is reported and Google is not called. If Google fails to close the channel, the calendar stays attached and the command exits nonzero, so you can run it again. The command writes nothing to Google except closing the channel.

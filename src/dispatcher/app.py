@@ -7,7 +7,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import HTMLResponse
 
-from dispatcher import db, http, sentience_auth, settings
+from dispatcher import attach, db, http, sentience_auth, settings, watches
+from dispatcher.errors import OperatorError
+from dispatcher.google_calendar import GoogleCalendar
 
 
 @asynccontextmanager
@@ -20,6 +22,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+log = logging.getLogger(__name__)
 
 
 class _HideCallbackQuery(logging.Filter):
@@ -50,7 +53,7 @@ def _bearer_token(authorization: str | None) -> str | None:
     return token.lstrip(" ")
 
 
-@app.post("/internal/renew-watches", status_code=204)
+@app.post("/internal/renew-watches")
 def renew_watches(authorization: str | None = Header(default=None)) -> Response:
     # Renewal Ping Authentication: an app without the secret is never open.
     secret = settings.get("INTERNAL_CRON_SECRET")
@@ -65,7 +68,21 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
             detail="Unauthorized",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return Response(status_code=204)
+    # The body names no calendar, channel, or event: the renewal workflow's log is public.
+    try:
+        failures = []
+        # With nothing to renew, no Google or address setting is needed.
+        if channels := db.get_active_channels():
+            failures = watches.renew_all(
+                GoogleCalendar(),
+                channels,
+                attach.webhook_address(settings.require("PUBLIC_BASE_URL")),
+            )
+    except OperatorError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    for message in failures:
+        log.warning("Renewal failed: %s", message)
+    return Response(status_code=502 if failures else 200)
 
 
 def _page(message: str, status_code: int) -> HTMLResponse:
