@@ -22,7 +22,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
-logger = logging.getLogger("uvicorn.error")
+log = logging.getLogger(__name__)
 
 
 class _HideCallbackQuery(logging.Filter):
@@ -81,7 +81,7 @@ def renew_watches(authorization: str | None = Header(default=None)) -> Response:
     except OperatorError as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     for message in failures:
-        logger.warning("Renewal failed: %s", message)
+        log.warning("Renewal failed: %s", message)
     return Response(status_code=502 if failures else 200)
 
 
