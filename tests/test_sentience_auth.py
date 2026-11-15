@@ -13,7 +13,7 @@ import re
 import time
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -38,10 +38,10 @@ class FakeSentience:
 
     def __init__(self):
         self.requests = []
-        self.register_response = lambda request: httpx.Response(
+        self.register_response = lambda request: httpx2.Response(
             201, json={"client_id": CLIENT_ID}
         )
-        self.token_response = lambda request: httpx.Response(
+        self.token_response = lambda request: httpx2.Response(
             200,
             json={
                 "access_token": ACCESS_TOKEN,
@@ -57,7 +57,7 @@ class FakeSentience:
             return self.register_response(request)
         if request.url.path == "/oauth/mcp-issuer/token":
             return self.token_response(request)
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
     def to(self, path):
         return [r for r in self.requests if r.url.path == path]
@@ -76,27 +76,27 @@ def form(request):
 
 
 def failing(request):
-    raise httpx.ConnectError("unreachable", request=request)
+    raise httpx2.ConnectError("unreachable", request=request)
 
 
 def reject(request):
-    return httpx.Response(400, json={"error": "invalid_redirect_uri"})
+    return httpx2.Response(400, json={"error": "invalid_redirect_uri"})
 
 
 def server_error(request):
-    return httpx.Response(500, text="boom")
+    return httpx2.Response(500, text="boom")
 
 
 def no_client_id(request):
-    return httpx.Response(201, json={})
+    return httpx2.Response(201, json={})
 
 
 def invalid_grant(request):
-    return httpx.Response(400, json={"error": "invalid_grant"})
+    return httpx2.Response(400, json={"error": "invalid_grant"})
 
 
 def unauthorized(request):
-    return httpx.Response(401, json={"error": "invalid_client"})
+    return httpx2.Response(401, json={"error": "invalid_client"})
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +147,7 @@ def seed_old_tokens():
 @pytest.fixture
 def fake(monkeypatch):
     server = FakeSentience()
-    monkeypatch.setattr(http, "transport", httpx.MockTransport(server))
+    monkeypatch.setattr(http, "transport", httpx2.MockTransport(server))
     return server
 
 
@@ -384,7 +384,7 @@ def test_callback_posts_the_token_form_stores_tokens_and_confirms(
 
 
 def test_a_response_without_expires_in_is_already_expired(sign_in, fake, client):
-    fake.token_response = lambda request: httpx.Response(
+    fake.token_response = lambda request: httpx2.Response(
         200, json={"access_token": ACCESS_TOKEN, "refresh_token": REFRESH_TOKEN}
     )
     params = sign_in()
@@ -396,7 +396,7 @@ def test_a_response_without_expires_in_is_already_expired(sign_in, fake, client)
 
 
 def test_a_response_without_a_refresh_token_stores_none(sign_in, fake, client):
-    fake.token_response = lambda request: httpx.Response(
+    fake.token_response = lambda request: httpx2.Response(
         200, json={"access_token": ACCESS_TOKEN, "expires_in": 60}
     )
     params = sign_in()
@@ -446,7 +446,7 @@ def test_missing_or_unknown_state_is_a_400(fake, settings_env, client, params):
 def test_a_used_state_is_a_400_and_stores_nothing_new(sign_in, fake, client):
     params = sign_in()
     assert callback(client, code=CODE, state=params["state"]).status_code == 200
-    fake.token_response = lambda request: httpx.Response(
+    fake.token_response = lambda request: httpx2.Response(
         200, json={"access_token": "replayed-access", "expires_in": 60}
     )
     stored = stored_tokens()

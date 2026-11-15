@@ -22,7 +22,7 @@ bash scripts/suite.sh       # the full suite, one libSQL container per CPU (need
 uv run ruff format && uv run ruff check
 ```
 
-Tests replace the network by setting `dispatcher.http.transport` to an `httpx` transport for Sentience's auth server and Resend, and `dispatcher.google_calendar.transport` to an `httplib2.Http`-compatible object for Google. They replace the operator's browser by replacing `dispatcher.cli.open_url`.
+Tests replace the network by setting `dispatcher.http.transport` to an `httpx2` transport for Sentience's auth server and Resend, and `dispatcher.google_calendar.transport` to an `httplib2.Http`-compatible object for Google. They replace the operator's browser by replacing `dispatcher.cli.open_url`.
 
 A local libSQL server that takes no token: `docker run -p 8080:8080 ghcr.io/tursodatabase/libsql-server:latest`, with `TURSO_DATABASE_URL=http://127.0.0.1:8080`.
 

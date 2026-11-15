@@ -2,7 +2,7 @@
 
 import logging
 
-import httpx
+import httpx2
 
 from dispatcher import settings
 from dispatcher.errors import OperatorError
@@ -21,7 +21,7 @@ def body(reauth_link: str) -> str:
     )
 
 
-def send_reauthorization_alert(client: httpx.Client, reauth_link: str) -> None:
+def send_reauthorization_alert(client: httpx2.Client, reauth_link: str) -> None:
     """Email the operator. A failure is logged, never raised: the alert is sent once per
     expiry, and nothing else depends on it. The log names no key or address."""
     try:
@@ -35,7 +35,7 @@ def send_reauthorization_alert(client: httpx.Client, reauth_link: str) -> None:
                 "text": body(reauth_link),
             },
         )
-    except (httpx.HTTPError, OperatorError) as exc:
+    except (httpx2.HTTPError, OperatorError) as exc:
         log.warning("Re-authorization alert not sent: %s", type(exc).__name__)
         return
     if not response.is_success:
