@@ -45,9 +45,18 @@ def renew_all(
 def detach(google: GoogleCalendar, calendar_id: str) -> None:
     """Close the calendar's channel and mark it inactive.
 
-    Raises OperatorError, leaving the calendar active, when it is not attached or when Google
-    does not close the channel.
+    Raises OperatorError, leaving the calendar active, when it is not attached, when Google
+    does not close the channel, or when the database fails. A detach that failed on the
+    database after Google closed the channel can be run again: Google's answer for a channel
+    that is already closed counts as closed.
     """
+    try:
+        _detach(google, calendar_id)
+    except db.Error as error:
+        raise OperatorError(f"the database failed: {error}") from error
+
+
+def _detach(google: GoogleCalendar, calendar_id: str) -> None:
     channel = db.get_active_channel(calendar_id)
     if channel is None:
         raise OperatorError(f"{calendar_id} is not attached")
