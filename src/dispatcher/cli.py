@@ -3,7 +3,7 @@ import sys
 import time
 import webbrowser
 
-from dispatcher import attach, http, sentience_auth, settings
+from dispatcher import attach, http, sentience_auth, settings, watches
 from dispatcher.errors import OperatorError
 from dispatcher.google_calendar import GoogleCalendar
 
@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=f"the same as `{attach.ALL_CALENDARS}`",
     )
+    detach_parser = calendar_actions.add_parser(
+        "detach", help="stop monitoring a calendar and close its Google subscription"
+    )
+    detach_parser.add_argument("calendar_id", help="the ID of an attached calendar")
     return parser
 
 
@@ -84,17 +88,28 @@ def calendar_attach(calendar_id: str | None, auto_discover: bool) -> int:
     return 1 if failed else 0
 
 
+def calendar_detach(calendar_id: str) -> None:
+    watches.detach(GoogleCalendar(), calendar_id)
+    print(f"detached {calendar_id}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return
-    if args.command == "calendar" and not _has_valid_target(args):
+    if (
+        args.command == "calendar"
+        and args.action == "attach"
+        and not _has_valid_target(args)
+    ):
         parser.error("calendar attach takes a calendar ID, `all`, or --auto-discover")
     try:
         if args.command == "auth":
             auth_sentience()
+        elif args.action == "detach":
+            calendar_detach(args.calendar_id)
         else:
             status = calendar_attach(args.calendar_id, args.auto_discover)
             if status:

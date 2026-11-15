@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import NamedTuple
 
 import turso_serverless
 
@@ -54,6 +55,15 @@ SCHEMA = (
     """,
 )
 
+
+class Channel(NamedTuple):
+    """An active calendar and the Google notification channel that watches it."""
+
+    calendar_id: str
+    channel_id: str
+    resource_id: str
+
+
 # The key of the single row in sentience_auth and in sentience_client.
 SENTIENCE_ID = "sentience"
 
@@ -88,6 +98,44 @@ def is_calendar_active(calendar_id: str) -> bool:
             "SELECT active FROM calendars WHERE calendar_id = ?", (calendar_id,)
         ).fetchone()
     return bool(row and row[0])
+
+
+def get_active_channel(calendar_id: str) -> Channel | None:
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT calendar_id, channel_id, resource_id FROM calendars "
+            "WHERE calendar_id = ? AND active = 1",
+            (calendar_id,),
+        ).fetchone()
+    return Channel(*row) if row else None
+
+
+def get_active_channels() -> list[Channel]:
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT calendar_id, channel_id, resource_id FROM calendars "
+            "WHERE active = 1 ORDER BY calendar_id"
+        ).fetchall()
+    return [Channel(*row) for row in rows]
+
+
+def replace_channel(
+    calendar_id: str, channel_id: str, resource_id: str, channel_expiration: int
+) -> None:
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE calendars SET channel_id = ?, resource_id = ?, channel_expiration = ? "
+            "WHERE calendar_id = ? AND active = 1",
+            (channel_id, resource_id, channel_expiration, calendar_id),
+        )
+
+
+def deactivate_calendar(calendar_id: str) -> None:
+    """Stop monitoring a calendar but keep its row."""
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE calendars SET active = 0 WHERE calendar_id = ?", (calendar_id,)
+        )
 
 
 def get_active_calendar_by_channel(channel_id: str) -> tuple[str, str | None] | None:
