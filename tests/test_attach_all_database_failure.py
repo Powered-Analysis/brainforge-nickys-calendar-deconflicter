@@ -50,6 +50,26 @@ def fail_for(monkeypatch, name, calendar_id, message="fictional connection reset
     monkeypatch.setattr(db, name, wrapper)
 
 
+def fail_reads_for(monkeypatch, calendar_id, message="fictional connection reset"):
+    """Makes every database read about one calendar raise `db.Error`, whichever `db` function
+    asks, so the test names no internal lookup."""
+    real_connect = db.connect
+
+    class Connection:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, sql, parameters=()):
+            if sql.lstrip().upper().startswith("SELECT") and calendar_id in parameters:
+                raise db.Error(message)
+            return self.inner.execute(sql, parameters)
+
+        def close(self):
+            self.inner.close()
+
+    monkeypatch.setattr(db, "connect", lambda: Connection(real_connect()))
+
+
 def outcomes_by_calendar():
     return {o.calendar_id: o for o in attach.attach_all(GoogleCalendar(), WEBHOOK, NOW)}
 
@@ -104,7 +124,7 @@ def test_every_calendar_failing_is_reported_once_each(mixed_list, monkeypatch):
 def test_a_database_error_while_checking_whether_a_calendar_is_attached_is_reported(
     mixed_list, monkeypatch
 ):
-    fail_for(monkeypatch, "is_calendar_active", HOME)
+    fail_reads_for(monkeypatch, HOME)
     outcomes = outcomes_by_calendar()
     assert outcomes[HOME].result == "failed"
     assert outcomes[WORK].result == "attached"
