@@ -82,6 +82,11 @@ class StoredAuth(NamedTuple):
 # What every failed database call raises, so callers can report it without importing the driver.
 Error = turso_serverless.Error
 
+
+def failure_message(error: Error) -> str:
+    return f"the database failed: {error}"
+
+
 # The key of the single row in sentience_auth, sentience_auth_expired, and sentience_client.
 SENTIENCE_ID = "sentience"
 

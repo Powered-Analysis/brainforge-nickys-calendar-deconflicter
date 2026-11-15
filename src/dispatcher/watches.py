@@ -58,7 +58,7 @@ def detach(google: GoogleCalendar, calendar_id: str) -> None:
     try:
         _detach(google, calendar_id)
     except db.Error as error:
-        raise OperatorError(f"the database failed: {error}") from error
+        raise OperatorError(db.failure_message(error)) from error
 
 
 def _detach(google: GoogleCalendar, calendar_id: str) -> None:
