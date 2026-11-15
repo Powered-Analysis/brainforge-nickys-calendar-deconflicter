@@ -22,6 +22,8 @@ bash scripts/suite.sh       # the full suite, one libSQL container per CPU (need
 uv run ruff format && uv run ruff check
 ```
 
+Tests replace the network by setting `dispatcher.http.transport` to an `httpx` transport, and the operator's browser by replacing `dispatcher.cli.open_url`.
+
 A local libSQL server that takes no token: `docker run -p 8080:8080 ghcr.io/tursodatabase/libsql-server:latest`, with `TURSO_DATABASE_URL=http://127.0.0.1:8080`.
 
 ## Run
@@ -53,3 +55,15 @@ fly deploy --ha=false
 ```
 
 The secrets are the names in [`.env.example`](.env.example). `POST /internal/renew-watches` answers `500` until `INTERNAL_CRON_SECRET` is set, and `401` to any request that does not carry `Authorization: Bearer <that secret>`.
+
+## Connect Sentience (First-Time Setup, step 3)
+
+With the app deployed and `PUBLIC_BASE_URL`, `SENTIENCE_AUTH_ISSUER`, and the database settings in your `.env`, run on your own machine:
+
+```bash
+uv run python -m dispatcher auth sentience
+```
+
+The command registers the dispatcher with Sentience as an OAuth client, the first time only, and stores the client in the database. It then prints Sentience's sign-in URL and opens it in your browser. After you sign in, Sentience redirects the browser to `<PUBLIC_BASE_URL>/oauth/sentience/callback`. The deployed app exchanges the code for tokens, stores them in the database, and shows *Sentience Connected Successfully.* Run the command again at any time to sign in again; it reuses the stored client.
+
+The command exits nonzero, and opens no browser, if registration fails. The callback answers `400` when Sentience reports an error or the authorization is unknown or already used, and `502` when Sentience's token endpoint does not return tokens; the stored tokens are unchanged in both cases. The app's access log omits the callback's query string, so the authorization code is never logged.
