@@ -22,7 +22,7 @@ bash scripts/suite.sh       # the full suite, one libSQL container per CPU (need
 uv run ruff format && uv run ruff check
 ```
 
-Tests replace the network by setting `dispatcher.http.transport` to an `httpx` transport, and the operator's browser by replacing `dispatcher.cli.open_url`.
+Tests replace the network by setting `dispatcher.http.transport` to an `httpx` transport for Sentience, and `dispatcher.google_calendar.transport` to an `httplib2.Http`-compatible object for Google. They replace the operator's browser by replacing `dispatcher.cli.open_url`.
 
 A local libSQL server that takes no token: `docker run -p 8080:8080 ghcr.io/tursodatabase/libsql-server:latest`, with `TURSO_DATABASE_URL=http://127.0.0.1:8080`.
 
@@ -56,6 +56,17 @@ fly deploy --ha=false
 
 The secrets are the names in [`.env.example`](.env.example). `POST /internal/renew-watches` answers `500` until `INTERNAL_CRON_SECRET` is set, and `401` to any request that does not carry `Authorization: Bearer <that secret>`.
 
+## Connect Google (First-Time Setup, step 2)
+
+The app calls the Calendar API as you, with a Desktop OAuth client and a refresh token. It asks for one scope, `https://www.googleapis.com/auth/calendar.readonly`, which every call it makes accepts. Creating the client takes a few minutes in the Google Cloud console:
+
+1. In a Google Cloud project, enable the **Google Calendar API**.
+2. Under **APIs & Services → OAuth consent screen**, configure the app for your Workspace. Choose *Internal* if it offers the choice, so the refresh token does not expire after seven days.
+3. Under **Credentials**, create an **OAuth client ID** of type **Desktop app**. Its client ID and client secret are `GCP_CLIENT_ID` and `GCP_CLIENT_SECRET`.
+4. Obtain a refresh token for your own account with that client and the scope above. Run the Desktop flow once on your machine, for example with Google's [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) set to *Use your own OAuth credentials*, authorizing `calendar.readonly` with *offline* access. The token it returns is `GCP_REFRESH_TOKEN`.
+
+Fill `GCP_CLIENT_ID`, `GCP_CLIENT_SECRET`, and `GCP_REFRESH_TOKEN` in your `.env` and as Fly secrets. Also fill `PUBLIC_BASE_URL` and `TURSO_DATABASE_URL`, which `calendar attach` needs too.
+
 ## Connect Sentience (First-Time Setup, step 3)
 
 With the app deployed and `PUBLIC_BASE_URL`, `SENTIENCE_AUTH_ISSUER`, and the database settings in your `.env`, run on your own machine:
@@ -67,3 +78,21 @@ uv run python -m dispatcher auth sentience
 The command registers the dispatcher with Sentience as an OAuth client, the first time only, and stores the client in the database. It then prints Sentience's sign-in URL and opens it in your browser. After you sign in, Sentience redirects the browser to `<PUBLIC_BASE_URL>/oauth/sentience/callback`. The deployed app exchanges the code for tokens, stores them in the database, and shows *Sentience Connected Successfully.* Run the command again at any time to sign in again; it reuses the stored client.
 
 The command exits nonzero, and opens no browser, if registration fails. The callback answers `400` when Sentience reports an error or the authorization is unknown or already used, and `502` when Sentience's token endpoint does not return tokens; the stored tokens are unchanged in both cases. The app's access log omits the callback's query string, so the authorization code is never logged.
+
+## Attach calendars (First-Time Setup, step 4)
+
+With the app deployed, run on your own machine:
+
+```bash
+uv run python -m dispatcher calendar attach <calendar_id>           # one calendar; `primary` works
+uv run python -m dispatcher calendar attach all                     # every calendar you own
+uv run python -m dispatcher calendar attach --auto-discover         # the same as `all`
+```
+
+For each calendar you own, the command reads its events once to record a starting point, opens a Google notification channel that points at `<PUBLIC_BASE_URL>/webhooks/gcal`, and stores the calendar in the database. It checks nothing for conflicts at that moment: an overlap already on the calendar is raised the next time either meeting changes. No redeploy or restart is needed, and the command writes nothing to Google except the notification channel.
+
+- A calendar that is already attached is skipped, and nothing changes.
+- A calendar you do not own, or that is not on your calendar list, is refused, and the command exits nonzero.
+- A calendar that was detached is attached again, with a new channel and starting point.
+- With `all`, a failure on one calendar is reported and the rest still attach; the command exits nonzero if any failed.
+- The command refuses, before calling Google, if `PUBLIC_BASE_URL` or a Google setting is unset, and the message names it.

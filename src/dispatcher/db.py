@@ -82,6 +82,42 @@ def ensure_schema() -> None:
             conn.execute(statement)
 
 
+def is_calendar_active(calendar_id: str) -> bool:
+    with _connection() as conn:
+        row = conn.execute(
+            "SELECT active FROM calendars WHERE calendar_id = ?", (calendar_id,)
+        ).fetchone()
+    return bool(row and row[0])
+
+
+def save_attached_calendar(
+    calendar_id: str,
+    channel_id: str,
+    resource_id: str,
+    channel_expiration: int,
+    sync_token: str,
+    created_at: int,
+) -> None:
+    """Store a newly attached calendar, or give a detached one a fresh subscription and cursor."""
+    with _connection() as conn:
+        conn.execute(
+            "INSERT INTO calendars (calendar_id, channel_id, resource_id, channel_expiration, "
+            "sync_token, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?) "
+            "ON CONFLICT(calendar_id) DO UPDATE SET channel_id = excluded.channel_id, "
+            "resource_id = excluded.resource_id, "
+            "channel_expiration = excluded.channel_expiration, "
+            "sync_token = excluded.sync_token, active = 1",
+            (
+                calendar_id,
+                channel_id,
+                resource_id,
+                channel_expiration,
+                sync_token,
+                created_at,
+            ),
+        )
+
+
 def get_sentience_client_id() -> str | None:
     with _connection() as conn:
         row = conn.execute(
