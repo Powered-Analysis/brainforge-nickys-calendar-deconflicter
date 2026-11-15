@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from dispatcher.errors import OperatorError
+
 NAMES = (
     "GCP_CLIENT_ID",
     "GCP_CLIENT_SECRET",
@@ -44,3 +46,10 @@ def get(name: str) -> str | None:
     if name in os.environ:
         return os.environ[name]
     return _read_env_file().get(name)
+
+
+def require(name: str) -> str:
+    value = get(name)
+    if not value:
+        raise OperatorError(f"{name} is not set")
+    return value
