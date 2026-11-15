@@ -64,9 +64,15 @@ def _attach_entry(
     resource_id, expiration = watch_record(
         google.watch(calendar_id, watch_body(channel_id, address))
     )
-    db.save_attached_calendar(
-        calendar_id, channel_id, resource_id, expiration, sync_token, now
-    )
+    try:
+        db.save_attached_calendar(
+            calendar_id, channel_id, resource_id, expiration, sync_token, now
+        )
+    except Exception:
+        # Without a row, renewal and detach could never find the channel, and Google would keep
+        # sending notifications for it until it expires.
+        google.stop_channel(channel_id, resource_id)
+        raise
     return Outcome(calendar_id, "attached", title(entry))
 
 
