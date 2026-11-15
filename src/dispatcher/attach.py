@@ -76,7 +76,19 @@ def stop_unrecorded_channel(
 def _attach_entry(
     google: GoogleCalendar, entry: dict, address: str, now: int
 ) -> Outcome:
-    """Attach one `CalendarList` entry. Raises OperatorError when a Google call fails."""
+    """Attach one `CalendarList` entry. Raises OperatorError when a Google call fails.
+
+    A database error is that calendar's `failed` outcome, for one calendar and for all alike.
+    """
+    try:
+        return _attach_calendar(google, entry, address, now)
+    except db.Error as error:
+        return Outcome(entry["id"], "failed", f"the database failed: {error}")
+
+
+def _attach_calendar(
+    google: GoogleCalendar, entry: dict, address: str, now: int
+) -> Outcome:
     calendar_id = entry["id"]
     if not is_owned(entry):
         return Outcome(calendar_id, "refused", "you do not own it")
@@ -116,8 +128,4 @@ def attach_all(google: GoogleCalendar, address: str, now: int) -> list[Outcome]:
             outcomes.append(_attach_entry(google, entry, address, now))
         except OperatorError as error:
             outcomes.append(Outcome(entry["id"], "failed", str(error)))
-        except db.Error as error:
-            outcomes.append(
-                Outcome(entry["id"], "failed", f"the database failed: {error}")
-            )
     return outcomes
