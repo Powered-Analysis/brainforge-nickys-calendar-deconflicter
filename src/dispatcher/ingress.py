@@ -1,6 +1,7 @@
 """Google's change notifications: reading the changes of the calendar that sent one, and
 delivering each conflict they raise."""
 
+import functools
 import logging
 import threading
 import time
@@ -30,26 +31,36 @@ def _deliver_conflicts(
         return
     now = datetime.now(UTC)
     domain = settings.require("GOOGLE_WORKSPACE_DOMAIN")
-    time_zone = None
+
+    # Asked of Google at most once per delta, and only when something needs it.
+    @functools.cache
+    def time_zone() -> str:
+        return _primary_time_zone(google)
+
+    # Cross-Calendar Ingress Timing: the other calendars are read on demand, never stored.
+    active_calendars = [channel.calendar_id for channel in db.get_active_channels()]
     for event in events:
-        incoming = conflicts.meeting_from_event(calendar_id, event, domain)
+        incoming = conflicts.meeting_from_event(calendar_id, event, domain, time_zone)
         # A meeting that has ended can't have an overlap still ahead.
         if incoming is None or incoming.end <= now:
             continue
         others = [
             meeting
+            for other_calendar in active_calendars
             for other in google.events_between(
-                calendar_id, incoming.start, incoming.end
+                other_calendar, incoming.start, incoming.end
             )
-            if (meeting := conflicts.meeting_from_event(calendar_id, other, domain))
+            if (
+                meeting := conflicts.meeting_from_event(
+                    other_calendar, other, domain, time_zone
+                )
+            )
         ]
         for conflict in conflicts.find_conflicts(incoming, others, now):
             event_hash = conflicts.event_hash(conflict)
             if db.is_conflict_processed(event_hash):
                 continue
-            if time_zone is None:
-                time_zone = _primary_time_zone(google)
-            sentience_auth.deliver(conflicts.message(conflict, time_zone))
+            sentience_auth.deliver(conflicts.message(conflict, time_zone()))
             db.record_processed_conflict(event_hash, calendar_id, int(time.time()))
 
 
