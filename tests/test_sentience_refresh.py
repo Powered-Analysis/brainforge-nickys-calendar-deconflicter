@@ -180,6 +180,7 @@ def net(monkeypatch):
 def mcp(monkeypatch):
     fake = Mcp()
     monkeypatch.setattr(sentience_mcp, "dispatch", fake)
+    monkeypatch.setenv("SENTIENCE_THREAD_ID", "thread-example-0001")
     return fake
 
 

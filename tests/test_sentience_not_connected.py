@@ -60,6 +60,7 @@ def outside_world(monkeypatch):
 
     monkeypatch.setattr(http, "transport", httpx2.MockTransport(handler))
     monkeypatch.setattr(sentience_mcp, "dispatch", dispatch)
+    monkeypatch.setenv("SENTIENCE_THREAD_ID", "thread-example-0001")
     return calls
 
 
