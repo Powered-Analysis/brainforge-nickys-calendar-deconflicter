@@ -147,6 +147,7 @@ class Sentience:
 def mcp(monkeypatch):
     fake = Sentience()
     monkeypatch.setattr(sentience_mcp, "dispatch", fake)
+    monkeypatch.setenv("SENTIENCE_THREAD_ID", "thread-example-0001")
     return fake
 
 
