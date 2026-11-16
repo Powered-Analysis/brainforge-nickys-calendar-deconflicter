@@ -47,14 +47,13 @@ The app runs as one machine that suspends when idle and wakes on the next reques
 
 ```bash
 fly launch --copy-config --no-deploy      # pick the app's name and region
-fly secrets set --stage \
-  GCP_CLIENT_ID=... GCP_CLIENT_SECRET=... GCP_REFRESH_TOKEN=... GOOGLE_WORKSPACE_DOMAIN=... \
-  TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... PUBLIC_BASE_URL=... INTERNAL_CRON_SECRET=... \
-  RESEND_API_KEY=... ALERT_TO=... SENTIENCE_MCP_URL=... SENTIENCE_AUTH_ISSUER=...
+fly secrets import --stage < .env
 fly deploy --ha=false
 ```
 
-The secrets are the names in [`.env.example`](.env.example). `POST /internal/renew-watches` answers `500` until `INTERNAL_CRON_SECRET` is set, and `401` to any request that does not carry `Authorization: Bearer <that secret>`.
+The import stages every entry in `.env`, so check that they are all intended for the Fly app. The settings are listed in [`.env.example`](.env.example). Fly strips surrounding quotes and treats an unquoted `#` as the start of a comment; Docker's `--env-file` passes quotes literally.
+
+`POST /internal/renew-watches` answers `500` until `INTERNAL_CRON_SECRET` is set, and `401` to any request that does not carry `Authorization: Bearer <that secret>`.
 
 ## Connect Google (First-Time Setup, step 2)
 
