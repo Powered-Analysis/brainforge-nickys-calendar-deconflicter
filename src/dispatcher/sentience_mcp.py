@@ -22,7 +22,7 @@ class AccessTokenRejected(DispatchFailed):
 
 
 async def _ask_sentience(
-    url: str, access_token: str, message: str, statuses: list[int]
+    url: str, access_token: str, thread_id: str, message: str, statuses: list[int]
 ) -> bool:
     headers = {"Authorization": f"Bearer {access_token}"}
     async with create_mcp_http_client(headers=headers) as http_client:
@@ -34,8 +34,9 @@ async def _ask_sentience(
         http_client.event_hooks["response"].append(note_status)
         transport = streamable_http_client(url, http_client=http_client)
         async with Client(transport) as client:
-            # `thread_id` is never sent, so every conflict opens its own Sentience chat.
-            result = await client.call_tool(TOOL, {"message": message})
+            result = await client.call_tool(
+                TOOL, {"message": message, "thread_id": thread_id}
+            )
     return not result.is_error
 
 
@@ -47,9 +48,13 @@ def dispatch(access_token: str, message: str) -> None:
     Sentience said reaches a log.
     """
     url = settings.require("SENTIENCE_MCP_URL")
+    # Without a thread id Sentience would open a new chat the operator never sees.
+    thread_id = settings.require("SENTIENCE_THREAD_ID")
     statuses: list[int] = []
     try:
-        delivered = asyncio.run(_ask_sentience(url, access_token, message, statuses))
+        delivered = asyncio.run(
+            _ask_sentience(url, access_token, thread_id, message, statuses)
+        )
     except Exception as exc:
         if HTTPStatus.UNAUTHORIZED in statuses:
             raise AccessTokenRejected("Sentience rejected the access token") from exc
