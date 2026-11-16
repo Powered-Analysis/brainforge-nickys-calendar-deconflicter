@@ -312,6 +312,8 @@ def _refresh(now: int) -> str:
 def deliver(message: str) -> None:
     """Dispatch one conflict message with a fresh access token, or raise OperatorError.
 
+    A missing SENTIENCE_THREAD_ID raises DispatchFailed before the token is touched.
+
     The token is renewed first when it has lapsed or is about to, and once more, with one
     retry of the dispatch, when Sentience rejects it. While access is expired nothing is
     refreshed and Sentience is not called.
@@ -319,6 +321,8 @@ def deliver(message: str) -> None:
     if db.is_sentience_auth_expired():
         raise AuthExpired("Sentience access has expired and must be reauthorized")
     auth = _stored_auth()
+    # Checked before any token work, so a missing chat id never costs a needless refresh.
+    sentience_mcp.require_thread_id()
     now = int(time.time())
     access_token = auth.access_token
     if needs_refresh(auth.expires_at, now):
