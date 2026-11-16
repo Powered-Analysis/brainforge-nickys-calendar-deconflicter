@@ -78,6 +78,15 @@ The command registers the dispatcher with Sentience as an OAuth client, the firs
 
 The command exits nonzero, and opens no browser, if registration fails. The callback answers `400` when Sentience reports an error or the authorization is unknown or already used, and `502` when Sentience's token endpoint does not return tokens; the stored tokens are unchanged in both cases. The app's access log omits the callback's query string, so the authorization code is never logged.
 
+Conflicts are delivered to one existing Sentience chat. Put that chat's id in `SENTIENCE_THREAD_ID`, in your `.env` and as a Fly secret, then deploy and send a fresh conflict:
+
+```bash
+fly secrets set SENTIENCE_THREAD_ID=<thread id>
+fly deploy --ha=false
+```
+
+Without `SENTIENCE_THREAD_ID` every conflict is undelivered, and its notification is answered `503`. If Sentience rejects the id, the error result is an undelivered conflict too. Whether the reply appears in the intended chat, and whether it notifies you, can only be seen in Sentience.
+
 After a successful callback the app also processes the changes of every active calendar, one at a time, so conflicts that went undelivered while Sentience was disconnected are delivered.
 
 ## Keeping Sentience access alive
@@ -138,6 +147,6 @@ A recurring series is one meeting. It overlaps another event when any of its occ
 
 Each event is classified `internal` or `external_mixed`: external when its organizer or any attendee, other than a room or the operator's own calendar, has an email domain that isn't `GOOGLE_WORKSPACE_DOMAIN` (compared without regard to case; a subdomain is outside). Two external events call for the `irreconcilable` policy, one of each for `never_move_external`, and two internal ones for `full_evaluation`.
 
-Every overlapping pair is one conflict, delivered as one call of Sentience's `ask_sentience` tool over a Streamable HTTP session to `SENTIENCE_MCP_URL`, with the stored access token and a single `message` argument. The message is the fixed instruction, the policy's sentence, and a JSON payload of the two events, with times in the primary calendar's time zone, as the PRD's Conflict Message Contract defines. It carries no description, location, conference link, or attachment. A call that returns a result that isn't an error delivers the conflict, and the app then records the conflict's hash in `processed_events`; Sentience's reply is not read or kept. A conflict whose hash is recorded is not sent again, so a repeated notification, or a title change that leaves the classification as it was, dispatches nothing. A change to either event's time or classification does. If Sentience isn't connected, its access is expired, or a call fails, that conflict isn't recorded and the notification is answered `503`; the conflicts delivered before it stay recorded.
+Every overlapping pair is one conflict, delivered as one call of Sentience's `ask_sentience` tool over a Streamable HTTP session to `SENTIENCE_MCP_URL`, with the stored access token, a `message` argument, and the `thread_id` argument set from `SENTIENCE_THREAD_ID`, so every conflict lands in that one existing chat. If `SENTIENCE_THREAD_ID` is unset or empty, no call is made and the conflict counts as undelivered. The message is the fixed instruction, the policy's sentence, and a JSON payload of the two events, with times in the primary calendar's time zone, as the PRD's Conflict Message Contract defines. It carries no description, location, conference link, or attachment. A call that returns a result that isn't an error delivers the conflict, and the app then records the conflict's hash in `processed_events`; Sentience's reply is not read or kept. A conflict whose hash is recorded is not sent again, so a repeated notification, or a title change that leaves the classification as it was, dispatches nothing. A change to either event's time or classification does. If Sentience isn't connected, its access is expired, or a call fails, that conflict isn't recorded and the notification is answered `503`; the conflicts delivered before it stay recorded.
 
 Notifications are processed one at a time across the app, so each waits for the one before it.
