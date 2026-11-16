@@ -40,6 +40,18 @@ async def _ask_sentience(
     return not result.is_error
 
 
+def require_thread_id() -> str:
+    """The chat conflicts are delivered to, or DispatchFailed when it is unset or empty.
+
+    Without a thread id Sentience would open a new chat the operator never sees, so the
+    dispatcher never calls `ask_sentience` without one (Dispatch Tool Call, Delivery).
+    """
+    thread_id = settings.get("SENTIENCE_THREAD_ID")
+    if not thread_id:
+        raise DispatchFailed("SENTIENCE_THREAD_ID is not set")
+    return thread_id
+
+
 def dispatch(access_token: str, message: str) -> None:
     """Deliver one conflict message, or raise DispatchFailed (AccessTokenRejected on a 401).
 
@@ -48,8 +60,7 @@ def dispatch(access_token: str, message: str) -> None:
     Sentience said reaches a log.
     """
     url = settings.require("SENTIENCE_MCP_URL")
-    # Without a thread id Sentience would open a new chat the operator never sees.
-    thread_id = settings.require("SENTIENCE_THREAD_ID")
+    thread_id = require_thread_id()
     statuses: list[int] = []
     try:
         delivered = asyncio.run(
